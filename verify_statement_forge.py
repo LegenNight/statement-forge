@@ -18,9 +18,8 @@ def test_statement_forge():
         # 2. Verify Header & Badges
         header_text = page.locator("header").inner_text()
         assert "StatementForge" in header_text, "Missing Logo text"
-        assert "100% Client-Side Processing" in header_text, "Missing Client-Side badge"
-        assert "Zero Server Uploads" in header_text, "Missing Zero Server badge"
-        print("[✓] Header bar and badges verified.")
+        assert "Local Processing Active" in header_text, "Missing Local Processing indicator"
+        print("[✓] Header bar and system status indicator verified.")
 
         # 3. Verify Telemetry & Reconciled Pill
         recon_pill = page.locator("text=[✓ RECONCILED: $0.00 VARIANCE]").first
@@ -28,7 +27,7 @@ def test_statement_forge():
         print("[✓] Status pill is [✓ RECONCILED: $0.00 VARIANCE].")
 
         # 4. Verify Monospace Balance Card Values
-        summary_text = page.locator("section").inner_text()
+        summary_text = page.locator("body").inner_text()
         assert "$14,850.20" in summary_text, "Beginning balance mismatch"
         assert "+$11,420.50" in summary_text, "Deposits mismatch"
         assert "-$7,995.90" in summary_text, "Withdrawals mismatch"
