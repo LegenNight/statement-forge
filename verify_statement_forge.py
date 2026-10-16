@@ -17,7 +17,7 @@ def test_statement_forge():
 
         # 2. Verify Header & Badges
         header_text = page.locator("header").inner_text()
-        assert "STATEMENTFORGE" in header_text, "Missing Logo text"
+        assert "StatementForge" in header_text, "Missing Logo text"
         assert "100% Client-Side Processing" in header_text, "Missing Client-Side badge"
         assert "Zero Server Uploads" in header_text, "Missing Zero Server badge"
         print("[✓] Header bar and badges verified.")
@@ -47,7 +47,7 @@ def test_statement_forge():
 
         # 7. Test Search Filter with "/"
         page.keyboard.press("/")
-        search_input = page.locator('input[placeholder*="Filter transactions"]')
+        search_input = page.locator('input[placeholder*="Search payees"]')
         search_input.type("Office Depot")
         page.wait_for_timeout(300)
         filtered_rows = page.locator("tbody tr").all()
