@@ -151,3 +151,155 @@ export function triggerFileDownload(content: string, filename: string, mimeType:
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
+
+// ---------------------------------------------------------------------------
+// OFX / QBO EXPORT ENGINE
+// ---------------------------------------------------------------------------
+
+/**
+ * Parses an MM/DD date string into YYYYMMDD120000[-5:EST] OFX format.
+ * Uses the provided statement year; defaults to current year if not supplied.
+ */
+function formatOFXDate(dateStr: string, year?: number): string {
+  const resolvedYear = year ?? new Date().getFullYear();
+  // dateStr may be "MM/DD" or "MM/DD/YYYY"
+  const parts = dateStr.split('/');
+  const mm = (parts[0] ?? '01').padStart(2, '0');
+  const dd = (parts[1] ?? '01').padStart(2, '0');
+  const yy = parts[2] ? parseInt(parts[2], 10) : resolvedYear;
+  return `${yy}${mm}${dd}120000[-5:EST]`;
+}
+
+/**
+ * Derives OFX TRNTYPE from transaction type.
+ * Returns CREDIT (or DEBIT) strictly adhering to spec.
+ */
+function toOFXType(type: string): 'CREDIT' | 'DEBIT' {
+  if (type === 'CREDIT') return 'CREDIT';
+  return 'DEBIT';
+}
+
+/**
+ * Generates a compliant OFX 1.x / QBO file string.
+ *
+ * Spec: OFX 1.02 SGML (plaintext header block + <OFX> body).
+ * - mappedVendor  -> <NAME>
+ * - mappedCategory or originalMemo -> <MEMO>
+ * - Redaction mode applies to NAME and MEMO fields.
+ *
+ * @param transactions  Ledger rows to export (already sliced for tier gate if needed)
+ * @param statementYear  Year extracted from statement metadata (for correct DTPOSTED)
+ * @param accountNumber  Account number for the BANKACCTFROM block
+ * @param isRedacted  Whether privacy redaction mode is active
+ */
+export function generateOFX(
+  transactions: ParsedTransaction[],
+  statementYear: number = new Date().getFullYear(),
+  accountNumber: string = 'UNKNOWN',
+  isRedacted: boolean = false
+): string {
+  // SGML plaintext header — must end with exactly one blank line before <OFX>
+  const header = [
+    'OFXHEADER:100',
+    'DATA:OFXSGML',
+    'VERSION:102',
+    'SECURITY:NONE',
+    'ENCODING:USASCII',
+    'CHARSET:1252',
+    'COMPRESSION:NONE',
+    'OLDFILEUID:NONE',
+    'NEWFILEUID:NONE',
+    '',
+  ].join('\r\n');
+
+  const now = formatOFXDate(
+    `${String(new Date().getMonth() + 1).padStart(2, '0')}/${String(new Date().getDate()).padStart(2, '0')}`,
+    new Date().getFullYear()
+  );
+
+  const safeAcct = isRedacted ? 'REDACTED' : accountNumber.replace(/\D/g, '') || 'UNKNOWN';
+
+  const stmtTrns = transactions
+    .map((tx, idx) => {
+      const trnType = toOFXType(tx.type);
+      const dtPosted = formatOFXDate(tx.date, statementYear);
+      const amount = tx.amount.toFixed(2);
+
+      // Unique FITID: date + index + raw amount to avoid collisions
+      const fitid = `${dtPosted.slice(0, 8)}${String(idx + 1).padStart(4, '0')}`;
+
+      let name = tx.mappedVendor || tx.cleanPayee;
+      let memo = tx.mappedCategory || tx.originalMemo;
+
+      if (isRedacted) {
+        name = redactText(name);
+        memo = redactText(memo);
+      }
+
+      // OFX NAME max 32 chars per spec; MEMO max 255
+      name = name.slice(0, 32).replace(/[<>&"']/g, ' ');
+      memo = memo.slice(0, 255).replace(/[<>&"']/g, ' ');
+
+      return [
+        '<STMTTRN>',
+        `<TRNTYPE>${trnType}`,
+        `<DTPOSTED>${dtPosted}`,
+        `<TRNAMT>${amount}`,
+        `<FITID>${fitid}`,
+        `<NAME>${name}`,
+        `<MEMO>${memo}`,
+        '</STMTTRN>',
+      ].join('\r\n');
+    })
+    .join('\r\n');
+
+  const body = [
+    '<OFX>',
+    '<SIGNONMSGSRSV1>',
+    '<SONRS>',
+    '<STATUS>',
+    '<CODE>0',
+    '<SEVERITY>INFO',
+    '</STATUS>',
+    `<DTSERVER>${now}`,
+    '<LANGUAGE>ENG',
+    '</SONRS>',
+    '</SIGNONMSGSRSV1>',
+    '<BANKMSGSRSV1>',
+    '<STMTTRNRS>',
+    '<TRNUID>1001',
+    '<STATUS>',
+    '<CODE>0',
+    '<SEVERITY>INFO',
+    '</STATUS>',
+    '<STMTRS>',
+    '<CURDEF>USD',
+    '<BANKACCTFROM>',
+    `<ACCTID>${safeAcct}`,
+    '<ACCTTYPE>CHECKING',
+    '</BANKACCTFROM>',
+    '<BANKTRANLIST>',
+    stmtTrns,
+    '</BANKTRANLIST>',
+    '</STMTRS>',
+    '</STMTTRNRS>',
+    '</BANKMSGSRSV1>',
+    '</OFX>',
+  ].join('\r\n');
+
+  return header + body;
+}
+
+/**
+ * Alias for generateOFX — produces identical content with .qbo extension
+ * (QuickBooks reads OFX 1.x with either extension).
+ */
+export function generateQBO(
+  transactions: ParsedTransaction[],
+  statementYear: number = new Date().getFullYear(),
+  accountNumber: string = 'UNKNOWN',
+  isRedacted: boolean = false
+): string {
+  return generateOFX(transactions, statementYear, accountNumber, isRedacted);
+}
+

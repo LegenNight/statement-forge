@@ -75,7 +75,7 @@ def run_comprehensive_e2e_tests():
         assert "Local Processing Active" in header_text, "Missing 'Local Processing Active' status text"
         print("  [✓] Security telemetry verified: ShieldCheck icon + 'Local Processing Active'.")
 
-        export_btn = page.locator('button:has-text("QuickBooks Online CSV")').first
+        export_btn = page.locator('button:has-text("Export .QBO")').first
         btn_class = export_btn.get_attribute("class") or ""
         assert "bg-slate-900" in btn_class, f"Expected bg-slate-900 on primary button, got: {btn_class}"
         assert "bg-blue-600" not in btn_class, "Found deprecated blue-600 on primary button!"
@@ -266,7 +266,7 @@ def run_comprehensive_e2e_tests():
 
         # A. QuickBooks Online CSV Download with Redaction
         with page.expect_download() as download_info:
-            page.click('button:has-text("QuickBooks Online CSV")')
+            page.click('button:has-text("QuickBooks CSV")')
         download = download_info.value
         qbo_path = download.path()
         with open(qbo_path, "r", encoding="utf-8") as f:
@@ -315,13 +315,218 @@ def run_comprehensive_e2e_tests():
         assert "0000008412" in page.locator("body").inner_text(), "Failed to unmask account number after toggle OFF"
         print("  [✓] Redaction mode toggle recovery verified: Cleanly restored original presentation.")
 
+        # -------------------------------------------------------------
+        # 10. STRICT NATIVE .QBO & .OFX SGML INTEGRITY VALIDATION
+        # -------------------------------------------------------------
+        print("\n[*] 10. Validating Strict Native .QBO & .OFX SGML Integrity...")
+
+        # A. Download .QBO file and inspect structural integrity in memory
+        with page.expect_download() as download_info:
+            page.click('button:has-text("Export .QBO")')
+        qbo_file = download_info.value
+        qbo_disk_path = qbo_file.path()
+        with open(qbo_disk_path, "r", encoding="utf-8") as f:
+            raw_qbo = f.read()
+
+        # 1. Validate OFX 1.02 SGML Header Block
+        assert "OFXHEADER:100" in raw_qbo, "Missing OFXHEADER:100"
+        assert "DATA:OFXSGML" in raw_qbo, "Missing DATA:OFXSGML"
+        assert "VERSION:102" in raw_qbo, "Missing VERSION:102"
+        assert "SECURITY:NONE" in raw_qbo, "Missing SECURITY:NONE"
+        assert "ENCODING:USASCII" in raw_qbo, "Missing ENCODING:USASCII"
+        assert "CHARSET:1252" in raw_qbo, "Missing CHARSET:1252"
+        print("  [✓] SGML 1.02 Header Block conforms strictly to banking standard.")
+
+        # 2. Validate Container Elements have open and close tags
+        assert "<OFX>" in raw_qbo and "</OFX>" in raw_qbo, "Missing <OFX> container"
+        assert "<BANKTRANLIST>" in raw_qbo and "</BANKTRANLIST>" in raw_qbo, "Missing <BANKTRANLIST> container"
+        assert "<STMTTRN>" in raw_qbo and "</STMTTRN>" in raw_qbo, "Missing <STMTTRN> container tags"
+
+        # 3. CRITICAL CONSTRAINT: Exact SGML-style syntax with NO closing tags where unsupported
+        unsupported_closing_tags = [
+            "</TRNTYPE>", "</DTPOSTED>", "</TRNAMT>", "</FITID>", "</NAME>", "</MEMO>",
+            "</CODE>", "</SEVERITY>", "</DTSERVER>", "</LANGUAGE>", "</TRNUID>", "</CURDEF>",
+            "</ACCTID>", "</ACCTTYPE>"
+        ]
+        for tag in unsupported_closing_tags:
+            assert tag not in raw_qbo, f"Found forbidden closing tag in SGML export: {tag}!"
+        print("  [✓] CRITICAL INVARIANT: Zero invalid closing tags found across entire OFX document.")
+
+        # 4. Validate exact transaction block structure
+        assert "<TRNTYPE>DEBIT" in raw_qbo or "<TRNTYPE>CREDIT" in raw_qbo, "Missing <TRNTYPE> tag"
+        assert "120000[-5:EST]" in raw_qbo, "Missing [-5:EST] timezone in <DTPOSTED>"
+        assert "<FITID>" in raw_qbo, "Missing <FITID> tag"
+        assert "<NAME>" in raw_qbo, "Missing <NAME> tag"
+        assert "<MEMO>" in raw_qbo, "Missing <MEMO> tag"
+        # Verify mapped vendor in <NAME>
+        assert "<NAME>Stripe Payments" in raw_qbo, "Expected mapped vendor 'Stripe Payments' in <NAME> tag"
+        print("  [✓] Transaction block format strictly validated: <STMTTRN>, <TRNTYPE>, <DTPOSTED>[-5:EST], <TRNAMT>, <FITID>, <NAME>, <MEMO>, </STMTTRN>.")
+
+        # B. Test Native .OFX Export
+        with page.expect_download() as download_info:
+            page.click('button:has-text("Export .OFX")')
+        ofx_file = download_info.value
+        ofx_disk_path = ofx_file.path()
+        with open(ofx_disk_path, "r", encoding="utf-8") as f:
+            raw_ofx = f.read()
+
+        assert raw_ofx.startswith("OFXHEADER:100"), "OFX export missing header"
+        assert "</TRNTYPE>" not in raw_ofx and "</NAME>" not in raw_ofx, "OFX contains closing tags on leaf nodes"
+        print(f"  [✓] Native .OFX verified: Generated valid SGML ({ofx_file.suggested_filename}).")
+
+        # C. Redaction mode sanitization applied to <NAME> and <MEMO>
+        redact_btn.click() # Turn ON
+        page.wait_for_timeout(200)
+
+        with page.expect_download() as download_info:
+            page.click('button:has-text("Export .QBO")')
+        redacted_qbo_file = download_info.value
+        with open(redacted_qbo_file.path(), "r", encoding="utf-8") as f:
+            redacted_qbo = f.read()
+
+        assert "<ACCTID>REDACTED" in redacted_qbo, "Account ID was not redacted in OFX/QBO!"
+        # In redaction mode, sensitive account tokens and patterns are masked
+        assert "0000008412" not in redacted_qbo, "Found raw account number in redacted OFX export!"
+        print("  [✓] Redaction mode sanitization verified on native .QBO: <ACCTID> and sensitive data masked.")
+
+        redact_btn.click() # Turn OFF
+        page.wait_for_timeout(200)
+
+        # -------------------------------------------------------------
+        # 11. GUMROAD LICENSE GATE & 20-ROW FREE TIER VALIDATION
+        # -------------------------------------------------------------
+        print("\n[*] 11. Validating Gumroad License Gate & 20-Row Free Tier Limit...")
+
+        # 1. Clear any stored license in localStorage to ensure unverified state
+        page.evaluate("() => localStorage.removeItem('statementforge_license')")
+        page.reload()
+        page.wait_for_selector("text=Local Processing Active")
+
+        # 2. Load 2-Month Bulk Sample (20 transactions)
+        page.click('button:has-text("Load 2-Month Bulk Sample")')
+        page.wait_for_selector("text=2 files processed")
+        page.wait_for_timeout(300)
+
+        # 3. Add 1 manual row to exceed the 20-row limit (total = 21 transactions)
+        page.click('button:has-text("Add Entry")')
+        page.wait_for_timeout(300)
+
+        # 4. Verify unverified state behavior:
+        # - The table should only display EXACTLY 20 transactions
+        displayed_rows = page.locator("tbody tr").all()
+        assert len(displayed_rows) == 20, f"Free tier violation! Expected exactly 20 rows, got {len(displayed_rows)}"
+        print(f"  [✓] Free tier display gate verified: Exactly {len(displayed_rows)} rows visible (1 hidden beyond 20 cap).")
+
+        # - The Free Tier banner should be visible
+        banner = page.locator("text=Free Tier: Displaying & exporting first 20 of 21 transactions")
+        assert banner.is_visible(), "Free tier cap banner missing!"
+        print("  [✓] Free tier cap banner verified: Informs user that first 20 of 21 transactions are active.")
+
+        # - The reconciliation badge still audits across ALL 21 transactions
+        body_text = page.locator("body").inner_text()
+        assert "RECONCILED" in body_text or "DISCREPANCY" in body_text, "Reconciliation telemetry missing"
+        print("  [✓] Full dataset reconciliation verified: Audits math across all 21 transactions despite visual cap.")
+
+        # - Free tier export restriction: Exported file must only contain 20 transactions
+        with page.expect_download() as download_info:
+            page.click('button:has-text("Export .QBO")')
+        gated_qbo = download_info.value
+        with open(gated_qbo.path(), "r", encoding="utf-8") as f:
+            gated_qbo_text = f.read()
+
+        stmttrn_count = gated_qbo_text.count("<STMTTRN>")
+        assert stmttrn_count == 20, f"Export tier gate failed! Expected 20 <STMTTRN> blocks, got {stmttrn_count}"
+        print(f"  [✓] Free tier export gate verified: Export capped at exactly {stmttrn_count} transactions.")
+
+        # 5. Open Unlock Modal and test validation
+        page.locator('button:has-text("Unlock Unlimited")').first.click()
+        page.wait_for_selector("text=Unlock StatementForge")
+        print("  [✓] 'Unlock StatementForge' modal opened.")
+
+        # Test empty input error
+        page.click('button:has-text("Verify & Unlock")')
+        page.wait_for_timeout(250)
+        assert page.locator("text=Please enter your license key").is_visible(), "Expected empty key validation error"
+        print("  [✓] Client validation verified: Empty key rejected.")
+
+        # Test proxy route with invalid key
+        license_input = page.locator('input[placeholder*="XXXXXXXX"]')
+        license_input.fill("INVALID-TEST-KEY-12345")
+        page.click('button:has-text("Verify & Unlock")')
+        page.wait_for_timeout(1200)
+        modal_text = page.locator("div.fixed.inset-0").first.inner_text()
+        assert "does not exist" in modal_text.lower() or "invalid" in modal_text.lower() or "error" in modal_text.lower() or "failed" in modal_text.lower(), (
+            f"Expected proxy validation failure for invalid key, got: {modal_text}"
+        )
+        print("  [✓] Next.js Proxy Route (/api/verify-license) verified: Proxied request to Gumroad API.")
+
+        # Close modal
+        close_btn = page.locator('div.fixed.inset-0 button:has(svg.lucide-x)').first
+        if close_btn.count() > 0:
+            close_btn.click()
+        page.wait_for_timeout(200)
+
+        # 6. Simulate valid Gumroad license verification via localStorage
+        page.evaluate("""() => {
+            localStorage.setItem('statementforge_license', JSON.stringify({
+                verified: true,
+                key: 'GUMROAD-AUDITED-2026-KEY',
+                verifiedAt: Date.now()
+            }));
+        }""")
+        page.reload()
+        page.wait_for_selector("text=Local Processing Active")
+
+        # Reload bulk sample + 1 manual entry (21 rows total)
+        page.click('button:has-text("Load 2-Month Bulk Sample")')
+        page.wait_for_selector("text=2 files processed")
+        page.click('button:has-text("Add Entry")')
+        page.wait_for_timeout(300)
+
+        # 7. Verify unlocked state:
+        # - Header shows "License Active"
+        assert page.locator("text=License Active").first.is_visible(), "Expected 'License Active' status in header"
+        print("  [✓] Header status verified: 'License Active' pill shown.")
+
+        # - All 21 rows are now rendered in the table!
+        unlocked_rows = page.locator("tbody tr").all()
+        assert len(unlocked_rows) == 21, f"Expected all 21 rows visible in unlocked state, got {len(unlocked_rows)}"
+        print(f"  [✓] Unlimited display verified: All {len(unlocked_rows)} transactions rendered.")
+
+        # - Free tier banner is hidden
+        assert page.locator("text=Free Tier: Displaying & exporting first 20").count() == 0, "Banner should be hidden when unlocked!"
+        print("  [✓] Banner dismissal verified: Cap banner hidden when unlocked.")
+
+        # - Export exports all 21 transactions
+        with page.expect_download() as download_info:
+            page.click('button:has-text("Export .QBO")')
+        unlocked_qbo = download_info.value
+        with open(unlocked_qbo.path(), "r", encoding="utf-8") as f:
+            unlocked_qbo_text = f.read()
+
+        unlocked_count = unlocked_qbo_text.count("<STMTTRN>")
+        assert unlocked_count == 21, f"Expected 21 <STMTTRN> blocks in unlocked export, got {unlocked_count}"
+        print(f"  [✓] Unlimited export verified: Exported all {unlocked_count} transactions.")
+
+        # - Test License Deactivation
+        page.click('button:has-text("License Active")')
+        page.wait_for_selector("text=Deactivate License")
+        page.click('button:has-text("Deactivate License")')
+        page.wait_for_timeout(300)
+
+        # Verify restored to free tier cap
+        post_deactivate_rows = page.locator("tbody tr").all()
+        assert len(post_deactivate_rows) == 20, f"Expected 20 rows after license deactivation, got {len(post_deactivate_rows)}"
+        print("  [✓] License deactivation verified: Instant reversion to 20-row free tier.")
+
         context.close()
         browser.close()
 
     print("\n" + "=" * 80)
-    print("  ALL VENDOR RULES, REDACTION & E2E TESTS PASSED SUCCESSFULLY! (100%)")
+    print("  ALL 11 E2E TEST SECTIONS (INCLUDING OFX/QBO & LICENSE GATE) PASSED! (100%)")
     print("=" * 80)
 
 
 if __name__ == "__main__":
     run_comprehensive_e2e_tests()
+

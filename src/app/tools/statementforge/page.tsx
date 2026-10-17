@@ -27,8 +27,12 @@ import {
   Landmark,
   EyeOff,
   Eye,
-  SlidersHorizontal,
   Tags,
+  Lock,
+  Unlock,
+  KeyRound,
+  Loader2,
+  FileCode2,
 } from 'lucide-react';
 import {
   parseMultipleStatements,
@@ -60,9 +64,19 @@ import {
   generateXeroCSV,
   generateStandard4ColumnCSV,
   generateTSV,
+  generateOFX,
+  generateQBO,
   triggerFileDownload,
 } from '@/lib/exportUtils';
 import { extractTextFromFile } from '@/lib/pdfExtractor';
+import {
+  loadLicenseState,
+  saveLicenseState,
+  clearLicenseState,
+  verifyGumroadLicense,
+  FREE_TIER_LIMIT,
+} from '@/lib/licenseGate';
+
 
 export default function StatementForgeAppPage() {
   const [statementData, setStatementData] = useState<StatementParseResult | null>(null);
@@ -88,19 +102,29 @@ export default function StatementForgeAppPage() {
   const [newRuleVendor, setNewRuleVendor] = useState<string>('');
   const [newRuleCategory, setNewRuleCategory] = useState<string>('');
 
+  // License Gate State (Persisted in localStorage)
+  const [isUnlocked, setIsUnlocked] = useState<boolean>(false);
+  const [showUnlockModal, setShowUnlockModal] = useState<boolean>(false);
+  const [licenseKeyInput, setLicenseKeyInput] = useState<string>('');
+  const [licenseError, setLicenseError] = useState<string | null>(null);
+  const [isVerifying, setIsVerifying] = useState<boolean>(false);
+
   const searchInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Initialize Vendor Rules from localStorage
+  // Initialize Vendor Rules + License State from localStorage (client-side only)
   useEffect(() => {
     const savedRules = loadVendorRules();
     setVendorRules(savedRules);
+    const licenseState = loadLicenseState();
+    setIsUnlocked(licenseState.verified);
   }, []);
 
-  // Initialize with multi-page fixture
+  // Initialize with sample Chase statement fixture
   useEffect(() => {
     loadSingleStatement(SAMPLE_CHASE_STATEMENT, 'chase_business_oct2026.pdf');
   }, []);
+
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -119,13 +143,13 @@ export default function StatementForgeAppPage() {
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'e') {
         e.preventDefault();
-        handleExportQBO();
+        handleExportNativeQBO();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [rawTransactions, useCleanPayee, vendorRules, isRedacted]);
+  }, [rawTransactions, useCleanPayee, vendorRules, isRedacted, isUnlocked]);
 
   // Load single statement text into state
   const loadSingleStatement = (text: string, sourceName: string = 'statement.pdf') => {
@@ -277,12 +301,18 @@ export default function StatementForgeAppPage() {
     });
   }, [transactions, typeFilter, searchQuery]);
 
+  // Display transactions capped by Free Tier limit (20) if unverified
+  const displayTransactions = useMemo(() => {
+    if (isUnlocked) return filteredTransactions;
+    return filteredTransactions.slice(0, FREE_TIER_LIMIT);
+  }, [filteredTransactions, isUnlocked]);
+
   // Checkbox selection
   const handleToggleSelectAll = () => {
-    if (selectedTxIds.size === filteredTransactions.length && filteredTransactions.length > 0) {
+    if (selectedTxIds.size === displayTransactions.length && displayTransactions.length > 0) {
       setSelectedTxIds(new Set());
     } else {
-      setSelectedTxIds(new Set(filteredTransactions.map((t) => t.id)));
+      setSelectedTxIds(new Set(displayTransactions.map((t) => t.id)));
     }
   };
 
@@ -408,15 +438,50 @@ export default function StatementForgeAppPage() {
     showToast('Added manual ledger row');
   };
 
-  // Export handlers (Respecting Redaction Mode and Vendor Mapping)
-  const getExportData = (): ParsedTransaction[] => {
-    if (selectedTxIds.size > 0) {
-      return transactions.filter((t) => selectedTxIds.has(t.id));
+  // License verification handler
+  const handleVerifyLicense = async () => {
+    if (!licenseKeyInput.trim()) {
+      setLicenseError('Please enter your license key.');
+      return;
     }
-    return transactions;
+    setIsVerifying(true);
+    setLicenseError(null);
+    const result = await verifyGumroadLicense(licenseKeyInput.trim());
+    setIsVerifying(false);
+    if (result.success) {
+      setIsUnlocked(true);
+      setShowUnlockModal(false);
+      setLicenseKeyInput('');
+      showToast('✓ License verified — unlimited export unlocked!');
+    } else {
+      setLicenseError(result.error || 'Verification failed. Please try again.');
+    }
   };
 
-  const handleExportQBO = () => {
+  const handleRevokeLicense = () => {
+    clearLicenseState();
+    setIsUnlocked(false);
+    showToast('License deactivated — free tier restored.');
+  };
+
+  // Export helpers — always respect tier gate for display/export
+  // Reconciliation math always uses the full `transactions` array (never gated).
+  const getExportData = (): ParsedTransaction[] => {
+    const source = selectedTxIds.size > 0
+      ? transactions.filter((t) => selectedTxIds.has(t.id))
+      : transactions;
+    // Free tier: cap export at FREE_TIER_LIMIT rows
+    return isUnlocked ? source : source.slice(0, FREE_TIER_LIMIT);
+  };
+
+  // Derive statement year from metadata (for OFX DTPOSTED)
+  const statementYear = useMemo(() => {
+    if (!statementData?.metadata.startDate) return new Date().getFullYear();
+    const match = statementData.metadata.startDate.match(/\b(20\d{2})\b/);
+    return match ? parseInt(match[1], 10) : new Date().getFullYear();
+  }, [statementData]);
+
+  const handleExportQBCSV = () => {
     const data = getExportData();
     const csv = generateQuickBooksCSV(data, useCleanPayee, isRedacted);
     const dateStr = statementData?.metadata.startDate.replace(/[\s,]+/g, '_') || 'ledger';
@@ -453,6 +518,26 @@ export default function StatementForgeAppPage() {
       showToast('Clipboard access denied');
     }
   };
+
+  const handleExportOFX = () => {
+    const data = getExportData();
+    const ofx = generateOFX(data, statementYear, statementData?.metadata.accountNumber || 'UNKNOWN', isRedacted);
+    const dateStr = statementData?.metadata.startDate.replace(/[\s,]+/g, '_') || 'ledger';
+    const tag = isRedacted ? '_redacted' : '';
+    triggerFileDownload(ofx, `StatementForge_${dateStr}${tag}.ofx`, 'application/x-ofx');
+    showToast(`Exported ${data.length} transactions as .OFX ${isRedacted ? '(Redacted)' : ''}`);
+  };
+
+  const handleExportNativeQBO = () => {
+    const data = getExportData();
+    const qbo = generateQBO(data, statementYear, statementData?.metadata.accountNumber || 'UNKNOWN', isRedacted);
+    const dateStr = statementData?.metadata.startDate.replace(/[\s,]+/g, '_') || 'ledger';
+    const tag = isRedacted ? '_redacted' : '';
+    triggerFileDownload(qbo, `StatementForge_${dateStr}${tag}.qbo`, 'application/vnd.intu.qbo');
+    showToast(`Exported ${data.length} transactions as .QBO ${isRedacted ? '(Redacted)' : ''}`);
+  };
+
+
 
   const fileCount = statementData?.metadata.fileCount ?? sourceFiles.length;
 
@@ -573,6 +658,29 @@ export default function StatementForgeAppPage() {
             >
               {isRedacted ? 'ON' : 'OFF'}
             </span>
+          </button>
+
+          {/* License Status / Unlock Trigger */}
+          <button
+            onClick={() => setShowUnlockModal(true)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 ${
+              isUnlocked
+                ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200'
+                : 'bg-stone-100 hover:bg-stone-200 text-slate-700'
+            }`}
+            title={isUnlocked ? 'Gumroad license verified: Unlimited export active' : 'Click to unlock unlimited transactions'}
+          >
+            {isUnlocked ? (
+              <Unlock className="w-3.5 h-3.5 text-emerald-600" />
+            ) : (
+              <Lock className="w-3.5 h-3.5 text-amber-800" />
+            )}
+            <span>{isUnlocked ? 'License Active' : 'Unlock Unlimited'}</span>
+            {!isUnlocked && (
+              <span className="text-[9px] font-mono font-semibold px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-950">
+                20-Row Free
+              </span>
+            )}
           </button>
 
           {/* Security Telemetry Pill */}
@@ -776,6 +884,35 @@ export default function StatementForgeAppPage() {
           </div>
         </div>
 
+        {/* Free Tier Limit Banner (Assay Style) */}
+        {!isUnlocked && transactions.length > FREE_TIER_LIMIT && (
+          <div className="bg-amber-50/70 border border-amber-200/80 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm">
+            <div className="flex items-start sm:items-center gap-3.5">
+              <div className="w-9 h-9 rounded-xl bg-amber-100 border border-amber-200 flex items-center justify-center shrink-0 text-amber-800">
+                <Lock className="w-4 h-4" />
+              </div>
+              <div>
+                <div className="text-xs font-bold text-slate-900 flex items-center gap-2">
+                  <span>Free Tier: Displaying & exporting first {FREE_TIER_LIMIT} of {transactions.length} transactions</span>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-100 text-amber-950 border border-amber-300 font-semibold">
+                    Cap Active
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600 mt-0.5">
+                  Full statement dataset was parsed and verified for math accuracy ({currentReconciliation?.status === 'BALANCED' ? '$0.00 variance' : 'audited'}). Enter your Gumroad license key to unlock unlimited transactions and bulk exports.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setShowUnlockModal(true)}
+              className="flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold bg-slate-900 hover:bg-slate-800 active:bg-black text-white transition-all duration-200 shadow-sm shrink-0"
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              <span>Unlock Unlimited</span>
+            </button>
+          </div>
+        )}
+
         {/* 3. DATA GRID & CONTROLS CONTAINER */}
         <div className="bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-stone-200/70 overflow-hidden transition-all">
           {/* Table Toolbar & Filters */}
@@ -880,8 +1017,8 @@ export default function StatementForgeAppPage() {
                     <input
                       type="checkbox"
                       checked={
-                        filteredTransactions.length > 0 &&
-                        selectedTxIds.size === filteredTransactions.length
+                        displayTransactions.length > 0 &&
+                        selectedTxIds.size === displayTransactions.length
                       }
                       onChange={handleToggleSelectAll}
                       className="rounded border-stone-300 text-slate-900 focus:ring-slate-900 cursor-pointer"
@@ -901,7 +1038,7 @@ export default function StatementForgeAppPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-100">
-                {filteredTransactions.length === 0 ? (
+                {displayTransactions.length === 0 ? (
                   <tr>
                     <td colSpan={fileCount > 1 ? 8 : 7} className="text-center py-20 text-slate-400">
                       <div className="flex flex-col items-center justify-center gap-2">
@@ -922,7 +1059,7 @@ export default function StatementForgeAppPage() {
                     </td>
                   </tr>
                 ) : (
-                  filteredTransactions.map((tx) => {
+                  displayTransactions.map((tx) => {
                     const isSelected = selectedTxIds.has(tx.id);
                     const isCredit = tx.type === 'CREDIT';
                     const isCheck = tx.type === 'CHECK';
@@ -1113,7 +1250,14 @@ export default function StatementForgeAppPage() {
           {/* Table Footer */}
           <div className="bg-stone-50 px-6 py-3.5 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-500 border-t border-stone-200/70">
             <div className="flex items-center gap-3">
-              <span>Showing <strong>{filteredTransactions.length}</strong> of <strong>{transactions.length}</strong> entries</span>
+              <span>
+                Showing <strong>{displayTransactions.length}</strong> of <strong>{transactions.length}</strong> entries
+                {!isUnlocked && transactions.length > FREE_TIER_LIMIT && (
+                  <span className="text-amber-800 font-medium ml-1.5 bg-amber-100/70 px-2 py-0.5 rounded text-[11px] border border-amber-200/70">
+                    Free Tier: capped at {FREE_TIER_LIMIT}
+                  </span>
+                )}
+              </span>
               <span>•</span>
               <span>Chronologically sorted across {fileCount} statement{fileCount === 1 ? '' : 's'}</span>
               <span>•</span>
@@ -1141,6 +1285,8 @@ export default function StatementForgeAppPage() {
             <span>
               {selectedTxIds.size > 0
                 ? `${selectedTxIds.size} of ${transactions.length} rows selected`
+                : !isUnlocked && transactions.length > FREE_TIER_LIMIT
+                ? `First ${FREE_TIER_LIMIT} of ${transactions.length} transactions ready (Free Tier)`
                 : `${transactions.length} transactions ready (${fileCount} file${fileCount === 1 ? '' : 's'})`}
             </span>
           </div>
@@ -1158,45 +1304,67 @@ export default function StatementForgeAppPage() {
         </div>
 
         {/* Action Buttons: Assay Slate-900 Primary */}
-        <div className="flex items-center gap-2.5 overflow-x-auto py-1">
-          {/* Primary Action Button (Assay Slate-900) */}
+        <div className="flex items-center gap-2 overflow-x-auto py-1">
+          {/* Primary Action Button: Native .QBO (Assay Slate-900) */}
           <button
-            onClick={handleExportQBO}
+            onClick={handleExportNativeQBO}
             disabled={transactions.length === 0}
             className="flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold bg-slate-900 hover:bg-slate-800 active:bg-black text-white transition-all duration-200 shadow-sm hover:shadow disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-            title="Download QuickBooks Online CSV with mapped vendors and redaction"
+            title="Download native QuickBooks Online .qbo file with SGML tags"
           >
             <Download className="w-3.5 h-3.5 text-stone-300" />
-            <span>QuickBooks Online CSV</span>
+            <span>Export .QBO</span>
           </button>
 
-          {/* Secondary Action 1: Xero CSV */}
+          {/* Native .OFX Export */}
+          <button
+            onClick={handleExportOFX}
+            disabled={transactions.length === 0}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-full text-xs font-semibold bg-stone-100 hover:bg-stone-200 text-slate-800 transition-colors duration-200 disabled:opacity-50 shrink-0"
+            title="Download Open Financial Exchange .ofx file"
+          >
+            <FileCode2 className="w-3.5 h-3.5 text-amber-800" />
+            <span>Export .OFX</span>
+          </button>
+
+          {/* QuickBooks Online CSV */}
+          <button
+            onClick={handleExportQBCSV}
+            disabled={transactions.length === 0}
+            className="flex items-center gap-2 px-3 py-2 rounded-full text-xs font-medium bg-stone-100 hover:bg-stone-200 text-slate-700 transition-colors duration-200 disabled:opacity-50 shrink-0"
+            title="Download QuickBooks Online CSV with mapped vendors and redaction"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-slate-500" />
+            <span>QuickBooks CSV</span>
+          </button>
+
+          {/* Xero CSV */}
           <button
             onClick={handleExportXero}
             disabled={transactions.length === 0}
-            className="flex items-center gap-2 px-3.5 py-2 rounded-full text-xs font-medium bg-stone-100 hover:bg-stone-200 text-slate-700 transition-colors duration-200 disabled:opacity-50 shrink-0"
+            className="flex items-center gap-2 px-3 py-2 rounded-full text-xs font-medium bg-stone-100 hover:bg-stone-200 text-slate-700 transition-colors duration-200 disabled:opacity-50 shrink-0"
             title="Download standard 5-column Xero CSV"
           >
             <FileSpreadsheet className="w-3.5 h-3.5 text-slate-500" />
             <span>Xero CSV</span>
           </button>
 
-          {/* Secondary Action 2: 4-Column Ledger */}
+          {/* Standard 4-Column Ledger */}
           <button
             onClick={handleExport4Column}
             disabled={transactions.length === 0}
-            className="hidden sm:flex items-center gap-2 px-3.5 py-2 rounded-full text-xs font-medium bg-stone-100 hover:bg-stone-200 text-slate-700 transition-colors duration-200 disabled:opacity-50 shrink-0"
+            className="hidden sm:flex items-center gap-2 px-3 py-2 rounded-full text-xs font-medium bg-stone-100 hover:bg-stone-200 text-slate-700 transition-colors duration-200 disabled:opacity-50 shrink-0"
             title="Standard 4-column: Date, Description, Debit, Credit"
           >
             <FileText className="w-3.5 h-3.5 text-slate-500" />
-            <span>Standard Ledger</span>
+            <span>Standard CSV</span>
           </button>
 
-          {/* Secondary Action 3: Copy TSV */}
+          {/* Copy TSV */}
           <button
             onClick={handleCopyTSV}
             disabled={transactions.length === 0}
-            className="flex items-center gap-2 px-3.5 py-2 rounded-full text-xs font-medium bg-stone-100 hover:bg-stone-200 text-slate-700 transition-colors duration-200 disabled:opacity-50 shrink-0"
+            className="flex items-center gap-2 px-3 py-2 rounded-full text-xs font-medium bg-stone-100 hover:bg-stone-200 text-slate-700 transition-colors duration-200 disabled:opacity-50 shrink-0"
             title="Copy clean TSV to clipboard for direct paste into Excel or Google Sheets"
           >
             <Copy className="w-3.5 h-3.5 text-slate-500" />
@@ -1392,7 +1560,139 @@ export default function StatementForgeAppPage() {
         </div>
       )}
 
-      {/* 7. TOAST NOTIFICATION */}
+      {/* 7. UNLOCK UNLIMITED MODAL (Assay Design System) */}
+      {showUnlockModal && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-50 p-4 transition-all">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4 border border-stone-200">
+            <div className="flex items-center justify-between pb-3 border-b border-stone-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-800">
+                  <KeyRound className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">
+                    {isUnlocked ? 'License Active' : 'Unlock StatementForge'}
+                  </h3>
+                  <p className="text-[11px] text-slate-400">Deterministic banking & ledger converter</p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowUnlockModal(false);
+                  setLicenseError(null);
+                }}
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-full hover:bg-stone-100 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {isUnlocked ? (
+              <div className="space-y-4 py-2">
+                <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs flex items-start gap-3">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                  <div>
+                    <strong className="block font-semibold">Unlimited License Active</strong>
+                    <span className="text-[11px] text-emerald-800">
+                      Your device is authorized for unlimited transactions, multi-file batch processing, and full .QBO/.OFX exports.
+                    </span>
+                  </div>
+                </div>
+
+                <div className="text-[11px] text-slate-500 leading-relaxed">
+                  License state is stored securely in your browser’s <code className="font-mono bg-stone-100 px-1 py-0.5 rounded text-slate-700">localStorage</code>. You can deactivate this key anytime if switching devices.
+                </div>
+
+                <div className="pt-2 flex justify-between items-center">
+                  <button
+                    onClick={handleRevokeLicense}
+                    className="text-xs text-rose-600 hover:text-rose-700 font-medium hover:underline"
+                  >
+                    Deactivate License
+                  </button>
+                  <button
+                    onClick={() => setShowUnlockModal(false)}
+                    className="px-5 py-2 rounded-full text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white transition-colors"
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4 py-1">
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  Free tier includes <strong>20 transactions</strong> and complete reconciliation auditing. Enter your Gumroad license key to remove all transaction caps and unlock unlimited exports.
+                </p>
+
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-semibold text-slate-600 block">
+                    Gumroad License Key
+                  </label>
+                  <input
+                    type="text"
+                    value={licenseKeyInput}
+                    onChange={(e) => {
+                      setLicenseKeyInput(e.target.value);
+                      if (licenseError) setLicenseError(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleVerifyLicense();
+                    }}
+                    placeholder="XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX"
+                    className="w-full bg-stone-50 border border-stone-200 rounded-xl px-3.5 py-2.5 font-mono text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                  />
+                  {licenseError && (
+                    <div className="text-[11px] text-rose-600 font-medium flex items-center gap-1.5 pt-1">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{licenseError}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-3 bg-stone-50 rounded-xl border border-stone-200/80 text-[11px] text-slate-500 space-y-1">
+                  <div className="flex items-center gap-1.5 font-medium text-slate-700">
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Zero telemetry & local persistence</span>
+                  </div>
+                  <p>
+                    Verified licenses are saved to your browser’s local storage. Verification is proxied client-side without storing your financial data on any server.
+                  </p>
+                </div>
+
+                <div className="pt-2 flex items-center justify-between gap-3">
+                  <a
+                    href="https://gumroad.com"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs text-amber-800 hover:text-amber-900 font-medium hover:underline"
+                  >
+                    Need a license? Get one →
+                  </a>
+                  <button
+                    onClick={handleVerifyLicense}
+                    disabled={isVerifying}
+                    className="flex items-center gap-2 px-5 py-2.5 rounded-full text-xs font-semibold bg-slate-900 hover:bg-slate-800 active:bg-black text-white transition-colors disabled:opacity-50"
+                  >
+                    {isVerifying ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Verifying...</span>
+                      </>
+                    ) : (
+                      <>
+                        <KeyRound className="w-3.5 h-3.5" />
+                        <span>Verify & Unlock</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 8. TOAST NOTIFICATION */}
       {toastMessage && (
         <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-xs px-4 py-2.5 rounded-full shadow-lg flex items-center gap-2 z-50 animate-fade-in font-medium">
           <Check className="w-3.5 h-3.5 text-emerald-400" />
