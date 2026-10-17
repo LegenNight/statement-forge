@@ -20,6 +20,15 @@ export interface ParsedTransaction {
   bankId?: SupportedBankId;
   bankName?: string;
   sourceFile?: string;
+  mappedVendor?: string;
+  mappedCategory?: string;
+}
+
+export interface VendorRule {
+  id: string;
+  pattern: string; // "If Payee Contains [Text]"
+  vendor: string;  // "Set Vendor to [Text]"
+  category: string;// "Set Category to [Text]"
 }
 
 export interface StatementSummary {

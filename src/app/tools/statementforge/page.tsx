@@ -24,8 +24,11 @@ import {
   ChevronRight,
   ArrowLeft,
   Files,
-  Layers,
   Landmark,
+  EyeOff,
+  Eye,
+  SlidersHorizontal,
+  Tags,
 } from 'lucide-react';
 import {
   parseMultipleStatements,
@@ -37,7 +40,16 @@ import {
   StatementParseResult,
   ExtractedDocument,
   TransactionType,
+  VendorRule,
 } from '@/lib/parserEngine';
+import {
+  loadVendorRules,
+  saveVendorRules,
+  applyVendorRules,
+  redactAccountNumber,
+  redactText,
+  DEFAULT_VENDOR_RULES,
+} from '@/lib/vendorRules';
 import {
   SAMPLE_CHASE_STATEMENT,
   SAMPLE_CHASE_STATEMENT_NOV,
@@ -54,9 +66,10 @@ import { extractTextFromFile } from '@/lib/pdfExtractor';
 
 export default function StatementForgeAppPage() {
   const [statementData, setStatementData] = useState<StatementParseResult | null>(null);
-  const [transactions, setTransactions] = useState<ParsedTransaction[]>([]);
+  const [rawTransactions, setRawTransactions] = useState<ParsedTransaction[]>([]);
   const [selectedTxIds, setSelectedTxIds] = useState<Set<string>>(new Set());
   const [useCleanPayee, setUseCleanPayee] = useState<boolean>(true);
+  const [isRedacted, setIsRedacted] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [typeFilter, setTypeFilter] = useState<'ALL' | 'CREDIT' | 'DEBIT' | 'CHECK'>('ALL');
   const [editingCell, setEditingCell] = useState<{ id: string; field: 'cleanPayee' | 'originalMemo' | 'amount' } | null>(null);
@@ -64,12 +77,25 @@ export default function StatementForgeAppPage() {
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [pasteModalOpen, setPasteModalOpen] = useState<boolean>(false);
+  const [rulesModalOpen, setRulesModalOpen] = useState<boolean>(false);
   const [rawPasteText, setRawPasteText] = useState<string>('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [sourceFiles, setSourceFiles] = useState<string[]>(['chase_business_oct2026.pdf']);
 
+  // Vendor Rules State (Persisted in localStorage)
+  const [vendorRules, setVendorRules] = useState<VendorRule[]>([]);
+  const [newRulePattern, setNewRulePattern] = useState<string>('');
+  const [newRuleVendor, setNewRuleVendor] = useState<string>('');
+  const [newRuleCategory, setNewRuleCategory] = useState<string>('');
+
   const searchInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Initialize Vendor Rules from localStorage
+  useEffect(() => {
+    const savedRules = loadVendorRules();
+    setVendorRules(savedRules);
+  }, []);
 
   // Initialize with multi-page fixture
   useEffect(() => {
@@ -99,7 +125,7 @@ export default function StatementForgeAppPage() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [transactions, useCleanPayee]);
+  }, [rawTransactions, useCleanPayee, vendorRules, isRedacted]);
 
   // Load single statement text into state
   const loadSingleStatement = (text: string, sourceName: string = 'statement.pdf') => {
@@ -107,7 +133,7 @@ export default function StatementForgeAppPage() {
     try {
       const parsed = parseStatement(text, sourceName);
       setStatementData(parsed);
-      setTransactions(parsed.transactions);
+      setRawTransactions(parsed.transactions);
       setSelectedTxIds(new Set());
       setSourceFiles([sourceName]);
       showToast(`Loaded ${parsed.transactions.length} transactions from ${sourceName}`);
@@ -125,7 +151,7 @@ export default function StatementForgeAppPage() {
     try {
       const parsed = parseMultipleStatements(docs);
       setStatementData(parsed);
-      setTransactions(parsed.transactions);
+      setRawTransactions(parsed.transactions);
       setSelectedTxIds(new Set());
       setSourceFiles(docs.map((d) => d.fileName));
       showToast(`Processed ${docs.length} statements (${parsed.transactions.length} transactions)`);
@@ -160,7 +186,7 @@ export default function StatementForgeAppPage() {
 
       const parsed = parseMultipleStatements(docs);
       setStatementData(parsed);
-      setTransactions(parsed.transactions);
+      setRawTransactions(parsed.transactions);
       setSelectedTxIds(new Set());
       setSourceFiles(docs.map((d) => d.fileName));
       showToast(`Successfully processed ${docs.length} file${docs.length > 1 ? 's' : ''} (${parsed.transactions.length} rows)`);
@@ -188,6 +214,11 @@ export default function StatementForgeAppPage() {
       handleMultipleFiles(e.dataTransfer.files);
     }
   };
+
+  // Dynamically apply vendor rules to the active transaction ledger
+  const transactions = useMemo(() => {
+    return applyVendorRules(rawTransactions, vendorRules);
+  }, [rawTransactions, vendorRules]);
 
   // Dynamically recompute reconciliation
   const currentReconciliation = useMemo(() => {
@@ -233,13 +264,14 @@ export default function StatementForgeAppPage() {
       }
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
-        const matchPayee = tx.cleanPayee.toLowerCase().includes(q);
+        const matchPayee = (tx.mappedVendor || tx.cleanPayee).toLowerCase().includes(q);
+        const matchCategory = tx.mappedCategory?.toLowerCase().includes(q) || false;
         const matchMemo = tx.originalMemo.toLowerCase().includes(q);
         const matchAmount = tx.amount.toString().includes(q) || tx.rawAmount.toString().includes(q);
         const matchDate = tx.date.includes(q);
         const matchCheck = tx.checkNumber?.includes(q);
         const matchFile = tx.sourceFile?.toLowerCase().includes(q);
-        return matchPayee || matchMemo || matchAmount || matchDate || matchCheck || matchFile;
+        return matchPayee || matchCategory || matchMemo || matchAmount || matchDate || matchCheck || matchFile;
       }
       return true;
     });
@@ -267,13 +299,13 @@ export default function StatementForgeAppPage() {
   const handleDeleteSelected = () => {
     if (selectedTxIds.size === 0) return;
     const count = selectedTxIds.size;
-    setTransactions((prev) => prev.filter((t) => !selectedTxIds.has(t.id)));
+    setRawTransactions((prev) => prev.filter((t) => !selectedTxIds.has(t.id)));
     setSelectedTxIds(new Set());
     showToast(`Deleted ${count} transaction${count > 1 ? 's' : ''}`);
   };
 
   const handleDeleteRow = (id: string) => {
-    setTransactions((prev) => prev.filter((t) => t.id !== id));
+    setRawTransactions((prev) => prev.filter((t) => t.id !== id));
     if (selectedTxIds.has(id)) {
       const next = new Set(selectedTxIds);
       next.delete(id);
@@ -292,11 +324,11 @@ export default function StatementForgeAppPage() {
     if (!editingCell) return;
     const { id, field } = editingCell;
 
-    setTransactions((prev) =>
+    setRawTransactions((prev) =>
       prev.map((tx) => {
         if (tx.id !== id) return tx;
         if (field === 'cleanPayee') {
-          return { ...tx, cleanPayee: editValue.trim() || tx.cleanPayee };
+          return { ...tx, cleanPayee: editValue.trim() || tx.cleanPayee, mappedVendor: undefined };
         } else if (field === 'originalMemo') {
           return { ...tx, originalMemo: editValue.trim() || tx.originalMemo };
         } else if (field === 'amount') {
@@ -313,6 +345,42 @@ export default function StatementForgeAppPage() {
 
     setEditingCell(null);
     setEditValue('');
+  };
+
+  // Vendor Rules Management
+  const handleAddVendorRule = () => {
+    if (!newRulePattern.trim() || !newRuleVendor.trim()) {
+      showToast('Pattern and Vendor Name are required.');
+      return;
+    }
+
+    const newRule: VendorRule = {
+      id: `rule_${Date.now()}`,
+      pattern: newRulePattern.trim(),
+      vendor: newRuleVendor.trim(),
+      category: newRuleCategory.trim() || 'General Expense',
+    };
+
+    const updated = [newRule, ...vendorRules];
+    setVendorRules(updated);
+    saveVendorRules(updated);
+    setNewRulePattern('');
+    setNewRuleVendor('');
+    setNewRuleCategory('');
+    showToast(`Rule added: "${newRule.pattern}" → ${newRule.vendor}`);
+  };
+
+  const handleDeleteVendorRule = (id: string) => {
+    const updated = vendorRules.filter((r) => r.id !== id);
+    setVendorRules(updated);
+    saveVendorRules(updated);
+    showToast('Rule deleted');
+  };
+
+  const handleResetDefaultRules = () => {
+    setVendorRules(DEFAULT_VENDOR_RULES);
+    saveVendorRules(DEFAULT_VENDOR_RULES);
+    showToast('Reset to default vendor rules');
   };
 
   // Add Manual Entry
@@ -335,12 +403,12 @@ export default function StatementForgeAppPage() {
       sourceFile: 'manual',
     };
 
-    setTransactions([newTx, ...transactions]);
+    setRawTransactions([newTx, ...rawTransactions]);
     handleStartEdit(newTx.id, 'cleanPayee', 'Manual Entry');
     showToast('Added manual ledger row');
   };
 
-  // Export handlers
+  // Export handlers (Respecting Redaction Mode and Vendor Mapping)
   const getExportData = (): ParsedTransaction[] => {
     if (selectedTxIds.size > 0) {
       return transactions.filter((t) => selectedTxIds.has(t.id));
@@ -350,34 +418,37 @@ export default function StatementForgeAppPage() {
 
   const handleExportQBO = () => {
     const data = getExportData();
-    const csv = generateQuickBooksCSV(data, useCleanPayee);
-    const dateStr = statementData?.metadata.startDate.replace(/[\s,]+/g, '_') || 'bulk_ledger';
-    triggerFileDownload(csv, `QuickBooks_Ledger_${dateStr}.csv`);
-    showToast(`Exported ${data.length} transactions for QuickBooks`);
+    const csv = generateQuickBooksCSV(data, useCleanPayee, isRedacted);
+    const dateStr = statementData?.metadata.startDate.replace(/[\s,]+/g, '_') || 'ledger';
+    const tag = isRedacted ? '_redacted' : '';
+    triggerFileDownload(csv, `QuickBooks_Ledger_${dateStr}${tag}.csv`);
+    showToast(`Exported ${data.length} transactions for QuickBooks ${isRedacted ? '(Redacted)' : ''}`);
   };
 
   const handleExportXero = () => {
     const data = getExportData();
-    const csv = generateXeroCSV(data);
-    const dateStr = statementData?.metadata.startDate.replace(/[\s,]+/g, '_') || 'bulk_ledger';
-    triggerFileDownload(csv, `Xero_Ledger_${dateStr}.csv`);
-    showToast(`Exported ${data.length} transactions for Xero`);
+    const csv = generateXeroCSV(data, isRedacted);
+    const dateStr = statementData?.metadata.startDate.replace(/[\s,]+/g, '_') || 'ledger';
+    const tag = isRedacted ? '_redacted' : '';
+    triggerFileDownload(csv, `Xero_Ledger_${dateStr}${tag}.csv`);
+    showToast(`Exported ${data.length} transactions for Xero ${isRedacted ? '(Redacted)' : ''}`);
   };
 
   const handleExport4Column = () => {
     const data = getExportData();
-    const csv = generateStandard4ColumnCSV(data, useCleanPayee);
-    const dateStr = statementData?.metadata.startDate.replace(/[\s,]+/g, '_') || 'bulk_ledger';
-    triggerFileDownload(csv, `Standard_Ledger_${dateStr}.csv`);
-    showToast(`Exported ${data.length} transactions in 4-column format`);
+    const csv = generateStandard4ColumnCSV(data, useCleanPayee, isRedacted);
+    const dateStr = statementData?.metadata.startDate.replace(/[\s,]+/g, '_') || 'ledger';
+    const tag = isRedacted ? '_redacted' : '';
+    triggerFileDownload(csv, `Standard_Ledger_${dateStr}${tag}.csv`);
+    showToast(`Exported ${data.length} transactions in 4-column format ${isRedacted ? '(Redacted)' : ''}`);
   };
 
   const handleCopyTSV = async () => {
     const data = getExportData();
-    const tsv = generateTSV(data, useCleanPayee);
+    const tsv = generateTSV(data, useCleanPayee, isRedacted);
     try {
       await navigator.clipboard.writeText(tsv);
-      showToast(`Copied ${data.length} transactions to clipboard as TSV`);
+      showToast(`Copied ${data.length} transactions to clipboard as TSV ${isRedacted ? '(Redacted)' : ''}`);
     } catch {
       showToast('Clipboard access denied');
     }
@@ -446,7 +517,7 @@ export default function StatementForgeAppPage() {
 
             <button
               onClick={() => {
-                setTransactions([]);
+                setRawTransactions([]);
                 setSelectedTxIds(new Set());
                 setStatementData(null);
                 setSourceFiles([]);
@@ -460,10 +531,53 @@ export default function StatementForgeAppPage() {
           </div>
         </div>
 
-        {/* Subtle Right-Aligned System Status Indicator */}
-        <div className="flex items-center gap-4">
+        {/* Subtle Right-Aligned Controls: Vendor Rules + Redaction Mode + System Status */}
+        <div className="flex items-center gap-3">
+          {/* Vendor Rules Modal Trigger */}
+          <button
+            onClick={() => setRulesModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-stone-100 hover:bg-stone-200/80 text-slate-700 transition-colors"
+            title="Configure deterministic payee-to-vendor mapping rules"
+          >
+            <Tags className="w-3.5 h-3.5 text-amber-800" />
+            <span>Vendor Rules</span>
+            <span className="text-[10px] font-mono font-semibold px-1.5 py-0.2 rounded-full bg-stone-200 text-slate-600">
+              {vendorRules.length}
+            </span>
+          </button>
+
+          {/* Privacy Redaction Mode Toggle */}
+          <button
+            onClick={() => {
+              const nextState = !isRedacted;
+              setIsRedacted(nextState);
+              showToast(nextState ? 'Privacy Redaction Mode: ACTIVE' : 'Privacy Redaction Mode: OFF');
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 ${
+              isRedacted
+                ? 'bg-amber-100 text-amber-950 border border-amber-300 font-semibold shadow-2xs'
+                : 'bg-stone-100 hover:bg-stone-200 text-slate-700'
+            }`}
+            title="Dynamically mask account numbers and sensitive client identifiers from view and exports"
+          >
+            {isRedacted ? (
+              <EyeOff className="w-3.5 h-3.5 text-amber-800" />
+            ) : (
+              <Eye className="w-3.5 h-3.5 text-slate-500" />
+            )}
+            <span>Redact Sensitive Data</span>
+            <span
+              className={`text-[9px] font-mono px-1.5 py-0.2 rounded-full uppercase tracking-wider ${
+                isRedacted ? 'bg-amber-200/90 text-amber-950 font-bold' : 'bg-stone-200 text-slate-500'
+              }`}
+            >
+              {isRedacted ? 'ON' : 'OFF'}
+            </span>
+          </button>
+
+          {/* Security Telemetry Pill */}
           <div
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md cursor-default text-xs text-slate-500 font-medium"
+            className="hidden xl:flex items-center gap-1.5 px-2.5 py-1 rounded-md cursor-default text-xs text-slate-500 font-medium"
             title="Files and statements are parsed 100% in local memory. No server uploads."
           >
             <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
@@ -482,7 +596,7 @@ export default function StatementForgeAppPage() {
 
       {/* 2. MAIN WORKSPACE */}
       <div className="max-w-7xl w-full mx-auto px-6 py-8 space-y-6 flex-1 pb-32">
-        {/* Top Info Banner: Account info + Multi-file pill + Reconciliation Badge */}
+        {/* Top Info Banner: Account info + Multi-file pill + Redacted Indicator + Reconciliation Badge */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 font-sans">
             {/* Subtle File Count Status Indicator */}
@@ -498,7 +612,13 @@ export default function StatementForgeAppPage() {
 
             <span className="font-medium text-slate-400">Account:</span>
             <span className="font-mono font-medium text-slate-800 bg-white px-2.5 py-1 rounded-lg border border-stone-200 shadow-2xs">
-              {statementData ? statementData.metadata.accountNumber : '0000008412'}
+              {statementData
+                ? isRedacted
+                  ? redactAccountNumber(statementData.metadata.accountNumber)
+                  : statementData.metadata.accountNumber
+                : isRedacted
+                ? '••••8412'
+                : '0000008412'}
             </span>
 
             <span className="text-stone-300">•</span>
@@ -512,6 +632,12 @@ export default function StatementForgeAppPage() {
             <span className="text-slate-600 hidden lg:inline font-medium">
               {statementData?.metadata.bankName || 'JPMorgan Chase'} — {statementData?.metadata.statementType || 'Business Checking'}
             </span>
+
+            {isRedacted && (
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 font-semibold">
+                [Redaction Mask Active]
+              </span>
+            )}
           </div>
 
           {/* Crisp, Borderless Reconciliation Alert Badge */}
@@ -663,7 +789,7 @@ export default function StatementForgeAppPage() {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search payees, memos, amounts, source files (Press '/')"
+                  placeholder="Search payees, vendors, categories, memos, amounts (Press '/')"
                   className="w-full bg-stone-50 hover:bg-stone-100/70 focus:bg-white rounded-full pl-9 pr-8 py-2 text-xs font-sans text-slate-800 placeholder-slate-400 outline-none ring-1 ring-stone-200 focus:ring-2 focus:ring-slate-900/20 transition-all duration-200"
                 />
                 {searchQuery && (
@@ -764,7 +890,7 @@ export default function StatementForgeAppPage() {
                   <th className="w-24 px-4 py-3.5">Date</th>
                   <th className="w-28 px-4 py-3.5">Type</th>
                   <th className="px-4 py-3.5">
-                    {useCleanPayee ? 'Clean Payee (Editable)' : 'Merchant Payee'}
+                    Vendor / Payee (Prioritizes Rules)
                   </th>
                   <th className="px-4 py-3.5 hidden md:table-cell">Original Memo</th>
                   {fileCount > 1 && (
@@ -800,6 +926,9 @@ export default function StatementForgeAppPage() {
                     const isSelected = selectedTxIds.has(tx.id);
                     const isCredit = tx.type === 'CREDIT';
                     const isCheck = tx.type === 'CHECK';
+
+                    const displayedPayee = tx.mappedVendor || (useCleanPayee ? tx.cleanPayee : tx.originalMemo);
+                    const displayedMemo = isRedacted ? redactText(tx.originalMemo) : tx.originalMemo;
 
                     return (
                       <tr
@@ -839,12 +968,12 @@ export default function StatementForgeAppPage() {
                           )}
                           {isCheck && (
                             <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-800 border border-slate-200">
-                              Check {tx.checkNumber ? `#${tx.checkNumber}` : ''}
+                              Check {tx.checkNumber ? (isRedacted ? '#••••' : `#${tx.checkNumber}`) : ''}
                             </span>
                           )}
                         </td>
 
-                        {/* Clean Payee Cell (Editable) */}
+                        {/* Vendor / Payee Cell (Prioritizes Mapped Vendor & Shows Category) */}
                         <td
                           className="px-4 py-3 text-slate-900 font-medium cursor-pointer"
                           onClick={() => {
@@ -867,16 +996,36 @@ export default function StatementForgeAppPage() {
                               className="w-full bg-white border border-slate-900 rounded-lg px-2.5 py-1 text-xs font-sans text-slate-900 focus:outline-none ring-2 ring-slate-900/10"
                             />
                           ) : (
-                            <div className="flex items-center gap-1.5 group/cell">
-                              <span className="truncate max-w-xs">{tx.cleanPayee}</span>
-                              <span className="text-[10px] text-slate-300 opacity-0 group-hover/cell:opacity-100 transition-opacity">
-                                ✎
-                              </span>
+                            <div className="flex flex-col gap-1 group/cell">
+                              <div className="flex items-center gap-2">
+                                <span className="truncate max-w-xs font-semibold text-slate-900">
+                                  {isRedacted ? redactText(displayedPayee) : displayedPayee}
+                                </span>
+                                {tx.mappedVendor && (
+                                  <span
+                                    className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-amber-100 text-amber-900 font-medium border border-amber-200"
+                                    title="Assigned via Vendor Rules Engine"
+                                  >
+                                    Rule Match
+                                  </span>
+                                )}
+                                <span className="text-[10px] text-slate-300 opacity-0 group-hover/cell:opacity-100 transition-opacity">
+                                  ✎
+                                </span>
+                              </div>
+
+                              {tx.mappedCategory && (
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-[10px] font-sans font-medium text-slate-600 bg-stone-100 px-2 py-0.5 rounded-full border border-stone-200/80">
+                                    {tx.mappedCategory}
+                                  </span>
+                                </div>
+                              )}
                             </div>
                           )}
                         </td>
 
-                        {/* Original Memo Cell (Editable) */}
+                        {/* Original Memo Cell (Editable, Redacted if active) */}
                         <td
                           className="px-4 py-3 text-slate-500 font-mono text-[11px] hidden md:table-cell cursor-pointer"
                           onClick={() => {
@@ -899,7 +1048,9 @@ export default function StatementForgeAppPage() {
                               className="w-full bg-white border border-slate-900 rounded-lg px-2.5 py-1 text-xs font-mono text-slate-900 focus:outline-none ring-2 ring-slate-900/10"
                             />
                           ) : (
-                            <span className="truncate max-w-sm block">{tx.originalMemo}</span>
+                            <span className="truncate max-w-sm block">
+                              {displayedMemo}
+                            </span>
                           )}
                         </td>
 
@@ -993,6 +1144,13 @@ export default function StatementForgeAppPage() {
                 : `${transactions.length} transactions ready (${fileCount} file${fileCount === 1 ? '' : 's'})`}
             </span>
           </div>
+
+          {isRedacted && (
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 font-bold border border-amber-300">
+              [Export Redaction Masked]
+            </span>
+          )}
+
           <span className="hidden xl:inline text-stone-300">|</span>
           <span className="hidden xl:inline text-xs text-slate-400">
             Press <kbd className="px-1.5 py-0.5 rounded bg-stone-100 text-slate-600 font-mono text-[11px]">Ctrl+E</kbd> for instant export
@@ -1006,7 +1164,7 @@ export default function StatementForgeAppPage() {
             onClick={handleExportQBO}
             disabled={transactions.length === 0}
             className="flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold bg-slate-900 hover:bg-slate-800 active:bg-black text-white transition-all duration-200 shadow-sm hover:shadow disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-            title="Download QuickBooks Online CSV"
+            title="Download QuickBooks Online CSV with mapped vendors and redaction"
           >
             <Download className="w-3.5 h-3.5 text-stone-300" />
             <span>QuickBooks Online CSV</span>
@@ -1047,7 +1205,140 @@ export default function StatementForgeAppPage() {
         </div>
       </footer>
 
-      {/* 5. RAW TEXT PASTE MODAL */}
+      {/* 5. VENDOR MAPPING RULES MODAL (Persists via localStorage) */}
+      {rulesModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-50 p-4 transition-all">
+          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl space-y-5 border border-stone-200 max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-stone-100 shrink-0">
+              <div className="flex items-center gap-2">
+                <Tags className="w-4 h-4 text-amber-800" />
+                <h3 className="text-sm font-bold text-slate-900">Deterministic Vendor Mapping Rules</h3>
+              </div>
+              <button
+                onClick={() => setRulesModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-full hover:bg-stone-100 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-500 shrink-0 leading-relaxed">
+              Rules map dirty raw memos to clean vendor names and accounting categories. Rules execute strictly in your browser and are stored permanently in your device’s <code className="font-mono bg-stone-100 px-1 py-0.5 rounded text-slate-700">localStorage</code>.
+            </p>
+
+            {/* Create Rule Form */}
+            <div className="bg-stone-50 p-4 rounded-xl border border-stone-200/80 space-y-3 shrink-0">
+              <div className="text-xs font-semibold text-slate-800">Add New Mapping Rule</div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div>
+                  <label className="text-[10px] font-semibold text-slate-500 block mb-1">If Payee Contains</label>
+                  <input
+                    type="text"
+                    value={newRulePattern}
+                    onChange={(e) => setNewRulePattern(e.target.value)}
+                    placeholder="e.g. UBER"
+                    className="w-full bg-white border border-stone-200 rounded-lg px-2.5 py-1.5 text-xs font-mono text-slate-800 placeholder-slate-400 outline-none focus:ring-1 focus:ring-slate-900"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-semibold text-slate-500 block mb-1">Set Vendor to</label>
+                  <input
+                    type="text"
+                    value={newRuleVendor}
+                    onChange={(e) => setNewRuleVendor(e.target.value)}
+                    placeholder="e.g. Uber Technologies"
+                    className="w-full bg-white border border-stone-200 rounded-lg px-2.5 py-1.5 text-xs font-sans text-slate-800 placeholder-slate-400 outline-none focus:ring-1 focus:ring-slate-900"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-semibold text-slate-500 block mb-1">Set Category to</label>
+                  <input
+                    type="text"
+                    value={newRuleCategory}
+                    onChange={(e) => setNewRuleCategory(e.target.value)}
+                    placeholder="e.g. Travel & Transport"
+                    className="w-full bg-white border border-stone-200 rounded-lg px-2.5 py-1.5 text-xs font-sans text-slate-800 placeholder-slate-400 outline-none focus:ring-1 focus:ring-slate-900"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-1">
+                <button
+                  onClick={handleAddVendorRule}
+                  disabled={!newRulePattern.trim() || !newRuleVendor.trim()}
+                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white transition-colors disabled:opacity-40"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add Mapping Rule</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Existing Rules List */}
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1 min-h-[160px]">
+              <div className="text-[11px] font-semibold text-slate-600 uppercase tracking-wider flex items-center justify-between pb-1">
+                <span>Active Rules ({vendorRules.length})</span>
+                <button
+                  onClick={handleResetDefaultRules}
+                  className="text-[10px] text-amber-800 hover:text-amber-900 font-medium normal-case"
+                >
+                  Reset Defaults
+                </button>
+              </div>
+
+              {vendorRules.length === 0 ? (
+                <div className="text-center py-8 text-slate-400 text-xs">
+                  No vendor rules configured. Add your first rule above.
+                </div>
+              ) : (
+                vendorRules.map((rule) => (
+                  <div
+                    key={rule.id}
+                    className="flex items-center justify-between gap-3 p-3 rounded-xl bg-white border border-stone-200 shadow-2xs hover:border-stone-300 transition-colors"
+                  >
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="font-mono text-[11px] font-medium text-slate-700 bg-stone-100 px-2 py-0.5 rounded border border-stone-200/80">
+                        {rule.pattern}
+                      </span>
+                      <span className="text-slate-400">→</span>
+                      <span className="font-semibold text-slate-900">{rule.vendor}</span>
+                      <span className="text-slate-300">•</span>
+                      <span className="text-[11px] text-amber-900 font-medium bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200/60">
+                        {rule.category}
+                      </span>
+                    </div>
+
+                    <button
+                      onClick={() => handleDeleteVendorRule(rule.id)}
+                      className="text-slate-300 hover:text-rose-600 p-1.5 rounded-full hover:bg-rose-50 transition-colors shrink-0"
+                      title="Delete rule"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="pt-3 border-t border-stone-100 flex items-center justify-between shrink-0">
+              <span className="text-[11px] text-slate-400">
+                Matches are automatically re-calculated across all active ledger rows.
+              </span>
+              <button
+                onClick={() => setRulesModalOpen(false)}
+                className="px-5 py-2 rounded-full text-xs font-semibold bg-slate-900 text-white hover:bg-slate-800 transition-colors"
+              >
+                Close & Save Rules
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 6. RAW TEXT PASTE MODAL */}
       {pasteModalOpen && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-50 p-4 transition-all">
           <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl space-y-4 border border-stone-200">
@@ -1101,7 +1392,7 @@ export default function StatementForgeAppPage() {
         </div>
       )}
 
-      {/* 6. TOAST NOTIFICATION */}
+      {/* 7. TOAST NOTIFICATION */}
       {toastMessage && (
         <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-xs px-4 py-2.5 rounded-full shadow-lg flex items-center gap-2 z-50 animate-fade-in font-medium">
           <Check className="w-3.5 h-3.5 text-emerald-400" />
