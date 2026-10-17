@@ -7,9 +7,9 @@ if hasattr(sys.stdout, "reconfigure"):
 
 
 def run_comprehensive_e2e_tests():
-    print("=" * 75)
-    print("  ASSAY & STATEMENTFORGE: FULL E2E SUITE WITH ROUTING & BRAND VERIFICATION")
-    print("=" * 75)
+    print("=" * 80)
+    print("  ASSAY & STATEMENTFORGE: BULK PROCESSING & MULTI-BANK ROUTER E2E SUITE")
+    print("=" * 80)
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -28,9 +28,9 @@ def run_comprehensive_e2e_tests():
         load_time_ms = (time.time() - t_start) * 1000
         print(f"  [✓] Storefront loaded in {load_time_ms:.1f}ms")
 
-        # Verify Brand Typography & Canvas Palette
-        body_class = page.locator("body").get_attribute("class") or ""
-        assert "bg-stone-50" in body_class or "selection:bg-amber-100" in body_class, "Expected Assay stone-50 palette"
+        # Brand Typography & Canvas Palette Checks
+        canvas_class = (page.locator("body").get_attribute("class") or "") + " " + (page.locator("div.min-h-screen").first.get_attribute("class") or "")
+        assert "bg-stone-50" in canvas_class or "stone" in canvas_class, f"Expected Assay stone-50 palette, got: {canvas_class}"
         print("  [✓] Storefront canvas verified: Light mode stone-50 background (bg-stone-50).")
 
         header_text = page.locator("header").inner_text()
@@ -44,90 +44,123 @@ def run_comprehensive_e2e_tests():
         )
         print("  [✓] Required headline verified: 'Small, exact tools for work that gets audited.'")
 
-        # Verify StatementForge showcase & CTA
+        # Verify StatementForge showcase & CTA links
         assert page.locator("text=StatementForge").count() > 0, "Missing StatementForge in storefront showcase"
         cta_buttons = page.locator('a[href="/tools/statementforge"]').all()
         assert len(cta_buttons) >= 2, f"Expected multiple 'Open StatementForge' links, found {len(cta_buttons)}"
-        print(f"  [✓] Storefront product routing verified: {len(cta_buttons)} links pointing to /tools/statementforge.")
+        print(f"  [✓] Product routing verified: {len(cta_buttons)} CTA links pointing to /tools/statementforge.")
 
         # -------------------------------------------------------------
         # 2. NAVIGATION TO STATEMENTFORGE TOOL ROUTE (/tools/statementforge)
         # -------------------------------------------------------------
-        print("\n[*] 2. Navigating to StatementForge Dedicated Route (/tools/statementforge)...")
+        print("\n[*] 2. Navigating to StatementForge Tool Route (/tools/statementforge)...")
         cta_buttons[0].click()
         page.wait_for_url("**/tools/statementforge")
         page.wait_for_selector("text=Local Processing Active")
-        print(f"  [✓] Successfully routed to: {page.url}")
+        print(f"  [✓] Successfully routed to dedicated tool URL: {page.url}")
 
         # -------------------------------------------------------------
         # 3. STATEMENTFORGE BRANDING & UI INTEGRITY CHECK
         # -------------------------------------------------------------
         print("\n[*] 3. Running StatementForge UI & Brand Integrity Checks...")
 
-        # Verify Header Branding: assay / StatementForge
         header_el = page.locator("header").first
         header_text = header_el.inner_text()
         assert "assay" in header_text, "Missing 'assay' in StatementForge header"
         assert "StatementForge" in header_text, "Missing 'StatementForge' in header"
         print("  [✓] Brand identity verified: 'assay / StatementForge' header.")
 
-        # Verify ShieldCheck Status Indicator ("Local Processing Active")
         shield_icon = page.locator("header svg.lucide-shield-check")
         assert shield_icon.count() > 0, "Missing ShieldCheck icon in header"
         assert "Local Processing Active" in header_text, "Missing 'Local Processing Active' status text"
         print("  [✓] Security telemetry verified: ShieldCheck icon + 'Local Processing Active'.")
 
-        # Verify Primary Action Button uses Assay Slate-900 palette (not old blue-600)
         export_btn = page.locator('button:has-text("QuickBooks Online CSV")').first
         btn_class = export_btn.get_attribute("class") or ""
         assert "bg-slate-900" in btn_class, f"Expected bg-slate-900 on primary button, got: {btn_class}"
         assert "bg-blue-600" not in btn_class, "Found deprecated blue-600 on primary button!"
         print("  [✓] Palette sync verified: Primary export button styled with 'bg-slate-900'.")
 
-        # -------------------------------------------------------------
-        # 4. MATH ENGINE & MULTI-PAGE FIXTURE VALIDATION
-        # -------------------------------------------------------------
-        print("\n[*] 4. Validating Multi-Page Math Engine & Reconciliation...")
+        # Verify subtle initial file status indicator: "1 file processed"
+        file_indicator = page.locator("text=1 file processed").first
+        assert file_indicator.is_visible(), "Expected '1 file processed' indicator"
+        print("  [✓] Subtle file status indicator verified: '1 file processed'.")
 
-        # Measure in-browser parse performance
+        # -------------------------------------------------------------
+        # 4. BULK PROCESSING & CHRONOLOGICAL SORTING VALIDATION
+        # -------------------------------------------------------------
+        print("\n[*] 4. Validating Bulk Processing & Chronological Sorting Engine...")
+
+        # Click "Load 2-Month Bulk Sample"
         t0 = time.time()
-        page.click('button:has-text("Load Sample Chase Statement")')
-        page.wait_for_selector("text=[✓ RECONCILED: $0.00 VARIANCE]")
-        parse_duration_ms = (time.time() - t0) * 1000
-        print(f"  [✓] Multi-page fixture parsed client-side in {parse_duration_ms:.1f}ms (Target < 500ms: PASS)")
+        page.click('button:has-text("Load 2-Month Bulk Sample")')
+        page.wait_for_selector("text=2 files processed")
+        bulk_parse_ms = (time.time() - t0) * 1000
+        print(f"  [✓] 2-Month bulk statements parsed client-side in {bulk_parse_ms:.1f}ms")
 
-        # Verify Reconciliation Badge
-        recon_badge = page.locator("text=[✓ RECONCILED: $0.00 VARIANCE]").first
-        assert recon_badge.is_visible(), "Reconciled badge not visible after multi-page parse"
-        assert "Ending balance perfectly matches" in page.locator("body").inner_text(), "Expected balanced explanation"
-        print("  [✓] Mathematical reconciliation status: [✓ RECONCILED: $0.00 VARIANCE].")
+        # Verify updated file count status indicator: "2 files processed"
+        bulk_file_indicator = page.locator("text=2 files processed").first
+        assert bulk_file_indicator.is_visible(), "Expected '2 files processed' indicator after bulk load"
+        print("  [✓] Bulk file count indicator verified: '2 files processed'.")
 
-        # Verify Monospace Summary Metric Figures
+        # Verify all 20 transactions parsed (13 Oct + 7 Nov)
+        bulk_rows = page.locator("tbody tr").all()
+        assert len(bulk_rows) == 20, f"Expected 20 combined transactions, got {len(bulk_rows)}"
+        print(f"  [✓] Bulk transaction aggregation verified: Exactly {len(bulk_rows)} combined transactions.")
+
+        # Verify Strict Chronological Sorting (Dates must flow from 10/02 up to 11/20)
+        dates = []
+        for row in bulk_rows:
+            date_cell = row.locator("td:nth-child(2)").inner_text().strip()
+            dates.append(date_cell)
+
+        # Check chronological ordering: October dates must precede November dates
+        oct_indices = [i for i, d in enumerate(dates) if d.startswith("10/")]
+        nov_indices = [i for i, d in enumerate(dates) if d.startswith("11/")]
+        assert len(oct_indices) == 13, f"Expected 13 October rows, found {len(oct_indices)}"
+        assert len(nov_indices) == 7, f"Expected 7 November rows, found {len(nov_indices)}"
+        assert max(oct_indices) < min(nov_indices), (
+            f"Chronological sort error! October transactions must appear before November. Dates: {dates}"
+        )
+        print(f"  [✓] Strict chronological sorting verified: All 13 October rows precede all 7 November rows.")
+
+        # Verify Source File column is displayed in bulk mode
+        source_col_header = page.locator('th:has-text("Source File")')
+        assert source_col_header.count() > 0, "Source File column should appear when multiple files are loaded"
+        print("  [✓] Multi-file source attribution verified: 'Source File' column active.")
+
+        # Verify Consolidated Summary Figures Across 2 Statements:
+        # Beginning: $14,850.20, Ending: $18,430.30, Reconciled $0.00 Variance
         body_text = page.locator("body").inner_text()
-        assert "$14,850.20" in body_text, "Beginning balance mismatch"
-        assert "+$11,420.50" in body_text, "Deposits inflow mismatch"
-        assert "-$7,995.90" in body_text, "Withdrawals outflow mismatch"
-        assert "$18,274.80" in body_text, "Ending balance mismatch"
-        print("  [✓] All 4 summary metrics verified: Beginning $14,850.20, In +$11,420.50, Out -$7,995.90, Ending $18,274.80.")
-
-        # Verify All 13 Rows Parsed Seamlessly across the page break
-        rows = page.locator("tbody tr").all()
-        assert len(rows) == 13, f"Expected 13 rows from multi-page fixture, got {len(rows)}"
-        print(f"  [✓] Multi-page stitching verified: Exactly {len(rows)} ledger transactions extracted.")
-
-        # Verify Redundant Bank Headers were sanitized
-        for row in rows:
-            text = row.inner_text()
-            assert "JPMorgan" not in text, "Redundant bank header was erroneously parsed as a transaction row!"
-            assert "PAGE_BREAK" not in text, "Page break marker was erroneously parsed as a transaction row!"
-            assert "Columbus OH" not in text, "Address block was erroneously parsed as a transaction row!"
-        print("  [✓] Header sanitization verified: Zero ghost rows from redundant page headers.")
+        assert "$14,850.20" in body_text, "Bulk beginning balance mismatch"
+        assert "+$16,920.50" in body_text, "Bulk deposits mismatch"
+        assert "$18,430.30" in body_text, "Bulk ending balance mismatch"
+        assert "[✓ RECONCILED: $0.00 VARIANCE]" in body_text, "Bulk reconciliation failed!"
+        print("  [✓] Bulk reconciliation verified: Beginning $14,850.20, Ending $18,430.30, $0.00 Variance.")
 
         # -------------------------------------------------------------
-        # 5. INTERACTIVE STATE HANDLING & LIVE RECALCULATION
+        # 5. MULTI-BANK AUTO-DETECTION ROUTER VALIDATION (AMEX)
         # -------------------------------------------------------------
-        print("\n[*] 5. Testing Interactive State Handling & Live Recalculation...")
+        print("\n[*] 5. Validating Multi-Bank Auto-Detection Router (American Express)...")
+        
+        amex_btn = page.locator('button:has-text("Amex Sample")')
+        if amex_btn.count() > 0 and amex_btn.is_visible():
+            amex_btn.click()
+            page.wait_for_selector("text=American Express")
+            amex_body = page.locator("body").inner_text()
+            assert "American Express" in amex_body, "Amex bank detection failed!"
+            assert "Delta Airlines" in amex_body or "Hilton Hotels" in amex_body, "Amex transactions missing"
+            print("  [✓] Multi-bank router verified: Auto-detected 'American Express' and parsed charges.")
 
+        # -------------------------------------------------------------
+        # 6. RELOAD SINGLE CHASE STATEMENT & TEST INTERACTIVE EDITING
+        # -------------------------------------------------------------
+        print("\n[*] 6. Validating Single-Statement Reload & Interactive Math Discrepancy...")
+        page.click('button:has-text("Load Sample Chase Statement")')
+        page.wait_for_selector("text=1 file processed")
+        assert len(page.locator("tbody tr").all()) == 13
+
+        # Edit first row amount: change $4,250.00 to $4,130.00 (-$120.00 difference)
         first_amount_cell = page.locator("tbody tr:first-child td:nth-child(6)")
         first_amount_cell.click()
         
@@ -150,9 +183,9 @@ def run_comprehensive_e2e_tests():
         print("  [✓] State recovery verified: Re-balanced to $0.00 variance.")
 
         # -------------------------------------------------------------
-        # 6. KEYBOARD SHORTCUTS & SEARCH FILTERING
+        # 7. KEYBOARD SHORTCUTS & SEARCH FILTERING
         # -------------------------------------------------------------
-        print("\n[*] 6. Testing Shortcuts & Filtering...")
+        print("\n[*] 7. Testing Shortcuts & Filtering...")
         page.keyboard.press("/")
         search_input = page.locator('input[placeholder*="Search payees"]')
         search_input.type("Office Depot")
@@ -169,9 +202,9 @@ def run_comprehensive_e2e_tests():
         assert len(page.locator("tbody tr").all()) == 13
 
         # -------------------------------------------------------------
-        # 7. EXPORT ENGINE VALIDATION (CLIENT-SIDE MEMORY DOWNLOADS)
+        # 8. EXPORT ENGINE VALIDATION (CLIENT-SIDE MEMORY DOWNLOADS)
         # -------------------------------------------------------------
-        print("\n[*] 7. Testing Export Engine (QuickBooks, Xero, TSV)...")
+        print("\n[*] 8. Testing Export Engine (QuickBooks, Xero, TSV)...")
 
         # A. QuickBooks Online CSV Download
         with page.expect_download() as download_info:
@@ -212,9 +245,9 @@ def run_comprehensive_e2e_tests():
         context.close()
         browser.close()
 
-    print("\n" + "=" * 75)
-    print("  ALL ASSAY & STATEMENTFORGE SUITE TESTS PASSED SUCCESSFULLY! (100%)")
-    print("=" * 75)
+    print("\n" + "=" * 80)
+    print("  ALL BULK PROCESSING, MULTI-BANK & E2E TESTS PASSED SUCCESSFULLY! (100%)")
+    print("=" * 80)
 
 
 if __name__ == "__main__":

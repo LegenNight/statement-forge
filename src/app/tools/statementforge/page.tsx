@@ -23,16 +23,26 @@ import {
   FileCheck2,
   ChevronRight,
   ArrowLeft,
+  Files,
+  Layers,
+  Landmark,
 } from 'lucide-react';
 import {
-  parseChaseStatement,
+  parseMultipleStatements,
+  parseStatement,
   recalculateReconciliation,
   formatCurrency,
+  detectBank,
   ParsedTransaction,
-  ChaseParseResult,
+  StatementParseResult,
+  ExtractedDocument,
   TransactionType,
-} from '@/lib/chaseParser';
-import { SAMPLE_CHASE_STATEMENT } from '@/lib/sampleChaseData';
+} from '@/lib/parserEngine';
+import {
+  SAMPLE_CHASE_STATEMENT,
+  SAMPLE_CHASE_STATEMENT_NOV,
+  SAMPLE_AMEX_STATEMENT,
+} from '@/lib/sampleChaseData';
 import {
   generateQuickBooksCSV,
   generateXeroCSV,
@@ -43,7 +53,7 @@ import {
 import { extractTextFromFile } from '@/lib/pdfExtractor';
 
 export default function StatementForgeAppPage() {
-  const [statementData, setStatementData] = useState<ChaseParseResult | null>(null);
+  const [statementData, setStatementData] = useState<StatementParseResult | null>(null);
   const [transactions, setTransactions] = useState<ParsedTransaction[]>([]);
   const [selectedTxIds, setSelectedTxIds] = useState<Set<string>>(new Set());
   const [useCleanPayee, setUseCleanPayee] = useState<boolean>(true);
@@ -56,14 +66,14 @@ export default function StatementForgeAppPage() {
   const [pasteModalOpen, setPasteModalOpen] = useState<boolean>(false);
   const [rawPasteText, setRawPasteText] = useState<string>('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [fileName, setFileName] = useState<string>('chase_business_oct2026.pdf');
+  const [sourceFiles, setSourceFiles] = useState<string[]>(['chase_business_oct2026.pdf']);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Initialize with multi-page fixture
   useEffect(() => {
-    loadStatementText(SAMPLE_CHASE_STATEMENT, 'chase_business_oct2026.pdf');
+    loadSingleStatement(SAMPLE_CHASE_STATEMENT, 'chase_business_oct2026.pdf');
   }, []);
 
   const showToast = (msg: string) => {
@@ -91,15 +101,15 @@ export default function StatementForgeAppPage() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [transactions, useCleanPayee]);
 
-  // Load statement text into state
-  const loadStatementText = (text: string, sourceName: string = 'statement.pdf') => {
+  // Load single statement text into state
+  const loadSingleStatement = (text: string, sourceName: string = 'statement.pdf') => {
     setIsLoading(true);
     try {
-      const parsed = parseChaseStatement(text);
+      const parsed = parseStatement(text, sourceName);
       setStatementData(parsed);
       setTransactions(parsed.transactions);
       setSelectedTxIds(new Set());
-      setFileName(sourceName);
+      setSourceFiles([sourceName]);
       showToast(`Loaded ${parsed.transactions.length} transactions from ${sourceName}`);
     } catch (err: any) {
       console.error(err);
@@ -109,20 +119,55 @@ export default function StatementForgeAppPage() {
     }
   };
 
-  // Handle file drop or selection
-  const handleFile = async (file: File) => {
+  // Load multiple statements from extracted document strings
+  const loadMultipleStatementDocs = (docs: ExtractedDocument[]) => {
     setIsLoading(true);
     try {
-      const text = await extractTextFromFile(file);
-      if (!text || text.trim().length === 0) {
-        showToast('No readable text found in document');
+      const parsed = parseMultipleStatements(docs);
+      setStatementData(parsed);
+      setTransactions(parsed.transactions);
+      setSelectedTxIds(new Set());
+      setSourceFiles(docs.map((d) => d.fileName));
+      showToast(`Processed ${docs.length} statements (${parsed.transactions.length} transactions)`);
+    } catch (err: any) {
+      console.error(err);
+      showToast('Error parsing statements.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Handle multi-file upload or drop
+  const handleMultipleFiles = async (files: FileList | File[]) => {
+    const fileArray = Array.from(files);
+    if (fileArray.length === 0) return;
+
+    setIsLoading(true);
+    try {
+      const docs: ExtractedDocument[] = [];
+      for (const f of fileArray) {
+        const text = await extractTextFromFile(f);
+        if (text && text.trim().length > 0) {
+          docs.push({ text, fileName: f.name });
+        }
+      }
+
+      if (docs.length === 0) {
+        showToast('No readable text found in document(s)');
         setIsLoading(false);
         return;
       }
-      loadStatementText(text, file.name);
+
+      const parsed = parseMultipleStatements(docs);
+      setStatementData(parsed);
+      setTransactions(parsed.transactions);
+      setSelectedTxIds(new Set());
+      setSourceFiles(docs.map((d) => d.fileName));
+      showToast(`Successfully processed ${docs.length} file${docs.length > 1 ? 's' : ''} (${parsed.transactions.length} rows)`);
     } catch (err) {
       console.error(err);
-      showToast('Failed to read file client-side.');
+      showToast('Failed to process statements client-side.');
+    } finally {
       setIsLoading(false);
     }
   };
@@ -140,7 +185,7 @@ export default function StatementForgeAppPage() {
     e.preventDefault();
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleFile(e.dataTransfer.files[0]);
+      handleMultipleFiles(e.dataTransfer.files);
     }
   };
 
@@ -154,7 +199,7 @@ export default function StatementForgeAppPage() {
     );
   }, [statementData, transactions]);
 
-  // Summary figures
+  // Aggregated summary metrics across all processed statements
   const summaryFigures = useMemo(() => {
     const beg = statementData?.summary.beginningBalance ?? 0;
     const end = statementData?.summary.endingBalance ?? 0;
@@ -193,7 +238,8 @@ export default function StatementForgeAppPage() {
         const matchAmount = tx.amount.toString().includes(q) || tx.rawAmount.toString().includes(q);
         const matchDate = tx.date.includes(q);
         const matchCheck = tx.checkNumber?.includes(q);
-        return matchPayee || matchMemo || matchAmount || matchDate || matchCheck;
+        const matchFile = tx.sourceFile?.toLowerCase().includes(q);
+        return matchPayee || matchMemo || matchAmount || matchDate || matchCheck || matchFile;
       }
       return true;
     });
@@ -249,25 +295,17 @@ export default function StatementForgeAppPage() {
     setTransactions((prev) =>
       prev.map((tx) => {
         if (tx.id !== id) return tx;
-
-        if (field === 'amount') {
-          const rawVal = parseFloat(editValue.replace(/[$,]/g, '')) || 0;
-          const signedVal = tx.type === 'CREDIT' ? rawVal : -rawVal;
-          return {
-            ...tx,
-            amount: signedVal,
-            rawAmount: rawVal,
-          };
-        } else if (field === 'cleanPayee') {
-          return {
-            ...tx,
-            cleanPayee: editValue.trim() || tx.cleanPayee,
-          };
+        if (field === 'cleanPayee') {
+          return { ...tx, cleanPayee: editValue.trim() || tx.cleanPayee };
         } else if (field === 'originalMemo') {
-          return {
-            ...tx,
-            originalMemo: editValue.trim() || tx.originalMemo,
-          };
+          return { ...tx, originalMemo: editValue.trim() || tx.originalMemo };
+        } else if (field === 'amount') {
+          const num = parseFloat(editValue.replace(/[$,]/g, ''));
+          if (!isNaN(num)) {
+            const raw = Math.abs(num);
+            const signed = tx.type === 'CREDIT' ? raw : -raw;
+            return { ...tx, rawAmount: raw, amount: signed };
+          }
         }
         return tx;
       })
@@ -277,28 +315,33 @@ export default function StatementForgeAppPage() {
     setEditValue('');
   };
 
-  // Add manual transaction
+  // Add Manual Entry
   const handleAddRow = () => {
     const today = new Date();
     const mm = String(today.getMonth() + 1).padStart(2, '0');
     const dd = String(today.getDate()).padStart(2, '0');
+    const dateStr = `${mm}/${dd}`;
+
     const newTx: ParsedTransaction = {
-      id: `tx-manual-${Date.now()}`,
-      date: `${mm}/${dd}`,
-      rawDate: `${mm}/${dd}`,
+      id: `manual_${Date.now()}`,
+      date: dateStr,
+      rawDate: dateStr,
       type: 'DEBIT',
       cleanPayee: 'Manual Entry',
-      originalMemo: 'MANUAL ENTRY ADJUSTMENT',
-      amount: -100.0,
-      rawAmount: 100.0,
-      section: 'MANUAL ADJUSTMENTS',
+      originalMemo: 'Manual Adjustment',
+      amount: -0.01,
+      rawAmount: 0.01,
+      section: 'Manual Adjustments',
+      sourceFile: 'manual',
     };
-    setTransactions((prev) => [newTx, ...prev]);
-    showToast('New ledger row added');
+
+    setTransactions([newTx, ...transactions]);
+    handleStartEdit(newTx.id, 'cleanPayee', 'Manual Entry');
+    showToast('Added manual ledger row');
   };
 
   // Export handlers
-  const getExportData = () => {
+  const getExportData = (): ParsedTransaction[] => {
     if (selectedTxIds.size > 0) {
       return transactions.filter((t) => selectedTxIds.has(t.id));
     }
@@ -308,24 +351,24 @@ export default function StatementForgeAppPage() {
   const handleExportQBO = () => {
     const data = getExportData();
     const csv = generateQuickBooksCSV(data, useCleanPayee);
-    const dateStr = statementData?.metadata.startDate.replace(/[\s,]+/g, '_') || 'statement';
-    triggerFileDownload(csv, `Chase_QBO_${dateStr}.csv`);
-    showToast(`Exported ${data.length} transactions for QuickBooks Online`);
+    const dateStr = statementData?.metadata.startDate.replace(/[\s,]+/g, '_') || 'bulk_ledger';
+    triggerFileDownload(csv, `QuickBooks_Ledger_${dateStr}.csv`);
+    showToast(`Exported ${data.length} transactions for QuickBooks`);
   };
 
   const handleExportXero = () => {
     const data = getExportData();
     const csv = generateXeroCSV(data);
-    const dateStr = statementData?.metadata.startDate.replace(/[\s,]+/g, '_') || 'statement';
-    triggerFileDownload(csv, `Chase_Xero_${dateStr}.csv`);
+    const dateStr = statementData?.metadata.startDate.replace(/[\s,]+/g, '_') || 'bulk_ledger';
+    triggerFileDownload(csv, `Xero_Ledger_${dateStr}.csv`);
     showToast(`Exported ${data.length} transactions for Xero`);
   };
 
   const handleExport4Column = () => {
     const data = getExportData();
     const csv = generateStandard4ColumnCSV(data, useCleanPayee);
-    const dateStr = statementData?.metadata.startDate.replace(/[\s,]+/g, '_') || 'statement';
-    triggerFileDownload(csv, `Chase_Standard_Ledger_${dateStr}.csv`);
+    const dateStr = statementData?.metadata.startDate.replace(/[\s,]+/g, '_') || 'bulk_ledger';
+    triggerFileDownload(csv, `Standard_Ledger_${dateStr}.csv`);
     showToast(`Exported ${data.length} transactions in 4-column format`);
   };
 
@@ -339,6 +382,8 @@ export default function StatementForgeAppPage() {
       showToast('Clipboard access denied');
     }
   };
+
+  const fileCount = statementData?.metadata.fileCount ?? sourceFiles.length;
 
   return (
     <div className="flex flex-col min-h-screen bg-stone-50 text-slate-900 font-sans selection:bg-amber-100 selection:text-amber-900">
@@ -359,12 +404,35 @@ export default function StatementForgeAppPage() {
           {/* Quick Action Navigation */}
           <div className="hidden sm:flex items-center gap-2 border-l border-stone-200 pl-6">
             <button
-              onClick={() => loadStatementText(SAMPLE_CHASE_STATEMENT, 'chase_business_oct2026.pdf')}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium rounded-full bg-stone-100 hover:bg-stone-200/70 text-slate-700 transition-colors duration-200"
-              title="Load sample Chase business checking statement"
+              onClick={() => loadSingleStatement(SAMPLE_CHASE_STATEMENT, 'chase_business_oct2026.pdf')}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full bg-stone-100 hover:bg-stone-200/70 text-slate-700 transition-colors duration-200"
+              title="Load single October 2026 Chase business statement"
             >
               <Sparkles className="w-3.5 h-3.5 text-amber-700" />
               <span>Load Sample Chase Statement</span>
+            </button>
+
+            <button
+              onClick={() =>
+                loadMultipleStatementDocs([
+                  { text: SAMPLE_CHASE_STATEMENT, fileName: 'chase_business_oct2026.pdf' },
+                  { text: SAMPLE_CHASE_STATEMENT_NOV, fileName: 'chase_business_nov2026.pdf' },
+                ])
+              }
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200/70 transition-colors duration-200"
+              title="Demonstrate bulk 2-month processing & chronological sorting"
+            >
+              <Files className="w-3.5 h-3.5 text-amber-700" />
+              <span>Load 2-Month Bulk Sample</span>
+            </button>
+
+            <button
+              onClick={() => loadSingleStatement(SAMPLE_AMEX_STATEMENT, 'amex_business_oct2026.pdf')}
+              className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full bg-stone-100 hover:bg-stone-200 text-slate-700 transition-colors duration-200"
+              title="Test multi-bank router with American Express"
+            >
+              <Landmark className="w-3.5 h-3.5 text-slate-500" />
+              <span>Amex Sample</span>
             </button>
 
             <button
@@ -381,6 +449,7 @@ export default function StatementForgeAppPage() {
                 setTransactions([]);
                 setSelectedTxIds(new Set());
                 setStatementData(null);
+                setSourceFiles([]);
                 showToast('Workspace cleared');
               }}
               className="px-2.5 py-1.5 text-xs font-medium rounded-full text-slate-400 hover:text-slate-600 hover:bg-stone-100 transition-colors duration-200"
@@ -413,20 +482,35 @@ export default function StatementForgeAppPage() {
 
       {/* 2. MAIN WORKSPACE */}
       <div className="max-w-7xl w-full mx-auto px-6 py-8 space-y-6 flex-1 pb-32">
-        {/* Top Info Banner: Account info + Reconciliation Badge */}
+        {/* Top Info Banner: Account info + Multi-file pill + Reconciliation Badge */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 font-sans">
+            {/* Subtle File Count Status Indicator */}
+            <div
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-stone-100 text-slate-800 border border-stone-200 text-xs font-medium"
+              title={`${fileCount} statement file${fileCount > 1 ? 's' : ''} currently loaded and parsed into memory`}
+            >
+              <Files className="w-3.5 h-3.5 text-slate-600" />
+              <span>{fileCount} file{fileCount === 1 ? '' : 's'} processed</span>
+            </div>
+
+            <span className="text-stone-300">•</span>
+
             <span className="font-medium text-slate-400">Account:</span>
             <span className="font-mono font-medium text-slate-800 bg-white px-2.5 py-1 rounded-lg border border-stone-200 shadow-2xs">
               {statementData ? statementData.metadata.accountNumber : '0000008412'}
             </span>
+
             <span className="text-stone-300">•</span>
+
             <span className="font-medium text-slate-700">
               {statementData?.metadata.statementPeriod || 'October 01, 2026 – October 31, 2026'}
             </span>
+
             <span className="text-stone-300 hidden lg:inline">•</span>
-            <span className="text-slate-500 hidden lg:inline">
-              {statementData?.metadata.statementType || 'Chase Business Complete Checking'}
+
+            <span className="text-slate-600 hidden lg:inline font-medium">
+              {statementData?.metadata.bankName || 'JPMorgan Chase'} — {statementData?.metadata.statementType || 'Business Checking'}
             </span>
           </div>
 
@@ -449,14 +533,14 @@ export default function StatementForgeAppPage() {
               >
                 <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
                 <span>
-                  <strong>[⚠ DISCREPANCY: {formatCurrency(currentReconciliation?.diff ?? 0, true)} - REVIEW FLAGGED ROWS]</strong>
+                  <strong>[⚠ DISCREPANCY: {formatCurrency(currentReconciliation?.diff ?? 0, true)}]</strong> — Review flagged rows
                 </span>
               </div>
             )}
           </div>
         </div>
 
-        {/* 4 SUMMARY METRICS CARDS (Assay Palette, Borderless Floating Cards) */}
+        {/* Summary Telemetry Metrics Row (Aggregates Across All Processed Statements) */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {/* Card 1: Beginning Balance */}
           <div className="bg-white rounded-2xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.03)] border border-stone-100 hover:border-stone-200 transition-all duration-200">
@@ -467,13 +551,13 @@ export default function StatementForgeAppPage() {
               {formatCurrency(summaryFigures.beginning)}
             </div>
             <div className="mt-1.5 text-xs text-slate-400 font-sans">
-              Statement opening balance
+              {fileCount > 1 ? `Earliest statement starting balance` : `Statement starting balance`}
             </div>
           </div>
 
-          {/* Card 2: Deposits (Inflow) */}
+          {/* Card 2: Inflow (Deposits) */}
           <div className="bg-white rounded-2xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.03)] border border-stone-100 hover:border-stone-200 transition-all duration-200">
-            <div className="text-xs font-semibold text-emerald-700 uppercase tracking-wider font-sans flex items-center gap-1">
+            <div className="text-xs font-medium text-emerald-700 uppercase tracking-wider font-sans flex items-center gap-1">
               <ArrowDownLeft className="w-3.5 h-3.5 text-emerald-600" />
               <span>In (Deposits)</span>
             </div>
@@ -481,7 +565,7 @@ export default function StatementForgeAppPage() {
               {formatCurrency(summaryFigures.in, true)}
             </div>
             <div className="mt-1.5 text-xs text-slate-400 font-sans">
-              {summaryFigures.creditCount} incoming deposit{summaryFigures.creditCount === 1 ? '' : 's'}
+              {summaryFigures.creditCount} incoming deposit{summaryFigures.creditCount === 1 ? '' : 's'} across {fileCount} file{fileCount === 1 ? '' : 's'}
             </div>
           </div>
 
@@ -509,12 +593,12 @@ export default function StatementForgeAppPage() {
               {formatCurrency(summaryFigures.ending)}
             </div>
             <div className="mt-1.5 text-xs text-amber-700/80 font-sans font-medium">
-              Audited reconciliation target
+              {fileCount > 1 ? `Latest closing statement balance` : `Audited reconciliation target`}
             </div>
           </div>
         </div>
 
-        {/* Drag & Drop Card (Stone Palette) */}
+        {/* Bulk Drag & Drop Card (Stone Palette with Multiple PDFs Support) */}
         <div
           onDragOver={onDragOver}
           onDragLeave={onDragLeave}
@@ -529,11 +613,12 @@ export default function StatementForgeAppPage() {
           <input
             ref={fileInputRef}
             type="file"
+            multiple
             accept=".pdf,.txt,text/plain,application/pdf"
             className="hidden"
             onChange={(e) => {
-              if (e.target.files && e.target.files[0]) {
-                handleFile(e.target.files[0]);
+              if (e.target.files && e.target.files.length > 0) {
+                handleMultipleFiles(e.target.files);
               }
             }}
           />
@@ -543,13 +628,19 @@ export default function StatementForgeAppPage() {
             </div>
             <div className="flex flex-col">
               <div className="text-xs font-semibold text-slate-800 flex items-center gap-2">
-                <span>Drop Chase Business Statement (PDF or TXT)</span>
+                <span>Drop Bank Statements (Multiple PDFs or TXTs)</span>
                 <span className="text-[10px] font-medium text-amber-800 bg-amber-50 border border-amber-200/60 px-2 py-0.5 rounded-full">
-                  Multi-page support
+                  Bulk Processing & Multi-Bank Auto-Detect
                 </span>
               </div>
-              <div className="text-[11px] text-slate-500">
-                Active statement: <span className="font-mono text-slate-700">{fileName}</span>
+              <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-2">
+                <span>Active:</span>
+                <span className="font-mono text-slate-700">
+                  {sourceFiles.length === 1
+                    ? sourceFiles[0]
+                    : `${sourceFiles.length} files (${sourceFiles.join(', ')})`}
+                </span>
+                <span className="text-emerald-700 font-semibold">• {fileCount} file{fileCount === 1 ? '' : 's'} processed</span>
               </div>
             </div>
           </div>
@@ -572,7 +663,7 @@ export default function StatementForgeAppPage() {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search payees, memos, amounts (Press '/')"
+                  placeholder="Search payees, memos, amounts, source files (Press '/')"
                   className="w-full bg-stone-50 hover:bg-stone-100/70 focus:bg-white rounded-full pl-9 pr-8 py-2 text-xs font-sans text-slate-800 placeholder-slate-400 outline-none ring-1 ring-stone-200 focus:ring-2 focus:ring-slate-900/20 transition-all duration-200"
                 />
                 {searchQuery && (
@@ -580,32 +671,32 @@ export default function StatementForgeAppPage() {
                     onClick={() => setSearchQuery('')}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
                   >
-                    <X className="w-3.5 h-3.5" />
+                    <X className="w-3 h-3" />
                   </button>
                 )}
               </div>
 
-              {/* Segmented Filter Pills */}
-              <div className="flex items-center bg-stone-100 p-1 rounded-full text-xs font-medium">
-                {(['ALL', 'CREDIT', 'DEBIT', 'CHECK'] as const).map((tab) => {
-                  const count = tab === 'ALL'
-                    ? transactions.length
-                    : transactions.filter((t) => t.type === tab).length;
-                  const label = tab === 'ALL' ? 'All' : tab === 'CREDIT' ? 'In' : tab === 'DEBIT' ? 'Out' : 'Checks';
-                  return (
-                    <button
-                      key={tab}
-                      onClick={() => setTypeFilter(tab)}
-                      className={`px-3 py-1 rounded-full transition-all duration-200 ${
-                        typeFilter === tab
-                          ? 'bg-white text-slate-900 font-semibold shadow-xs'
-                          : 'text-slate-500 hover:text-slate-900'
-                      }`}
-                    >
-                      {label} <span className="text-[10px] text-slate-400 font-normal">({count})</span>
-                    </button>
-                  );
-                })}
+              {/* Type Filter Pills */}
+              <div className="flex items-center p-1 bg-stone-100 rounded-full text-xs font-medium text-slate-600">
+                {(['ALL', 'CREDIT', 'DEBIT', 'CHECK'] as const).map((filter) => (
+                  <button
+                    key={filter}
+                    onClick={() => setTypeFilter(filter)}
+                    className={`px-3 py-1 rounded-full text-[11px] transition-all duration-200 ${
+                      typeFilter === filter
+                        ? 'bg-white text-slate-900 shadow-2xs font-semibold'
+                        : 'hover:text-slate-900'
+                    }`}
+                  >
+                    {filter === 'ALL'
+                      ? 'All'
+                      : filter === 'CREDIT'
+                      ? 'Credits'
+                      : filter === 'DEBIT'
+                      ? 'Debits'
+                      : 'Checks'}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -676,6 +767,9 @@ export default function StatementForgeAppPage() {
                     {useCleanPayee ? 'Clean Payee (Editable)' : 'Merchant Payee'}
                   </th>
                   <th className="px-4 py-3.5 hidden md:table-cell">Original Memo</th>
+                  {fileCount > 1 && (
+                    <th className="w-36 px-4 py-3.5 hidden lg:table-cell">Source File</th>
+                  )}
                   <th className="w-36 px-5 py-3.5 text-right">Amount ($)</th>
                   <th className="w-16 px-4 py-3.5 text-center">Action</th>
                 </tr>
@@ -683,7 +777,7 @@ export default function StatementForgeAppPage() {
               <tbody className="divide-y divide-stone-100">
                 {filteredTransactions.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="text-center py-20 text-slate-400">
+                    <td colSpan={fileCount > 1 ? 8 : 7} className="text-center py-20 text-slate-400">
                       <div className="flex flex-col items-center justify-center gap-2">
                         <FileSpreadsheet className="w-10 h-10 text-slate-300" />
                         <p className="text-sm font-medium text-slate-600">No transactions match the current filter.</p>
@@ -691,7 +785,7 @@ export default function StatementForgeAppPage() {
                           onClick={() => {
                             setSearchQuery('');
                             setTypeFilter('ALL');
-                            loadStatementText(SAMPLE_CHASE_STATEMENT, 'chase_business_oct2026.pdf');
+                            loadSingleStatement(SAMPLE_CHASE_STATEMENT, 'chase_business_oct2026.pdf');
                           }}
                           className="mt-2 text-xs text-amber-800 hover:text-amber-900 font-medium flex items-center gap-1"
                         >
@@ -726,7 +820,7 @@ export default function StatementForgeAppPage() {
                           />
                         </td>
 
-                        {/* Date (Monospace Tabular Only) */}
+                        {/* Date (Chronologically Sorted Monospace Tabular) */}
                         <td className="w-24 px-4 py-3 text-slate-600 font-mono text-xs tabular-nums font-medium">
                           {tx.date}
                         </td>
@@ -761,8 +855,8 @@ export default function StatementForgeAppPage() {
                         >
                           {editingCell?.id === tx.id && editingCell.field === 'cleanPayee' ? (
                             <input
-                              autoFocus
                               type="text"
+                              autoFocus
                               value={editValue}
                               onChange={(e) => setEditValue(e.target.value)}
                               onKeyDown={(e) => {
@@ -773,19 +867,18 @@ export default function StatementForgeAppPage() {
                               className="w-full bg-white border border-slate-900 rounded-lg px-2.5 py-1 text-xs font-sans text-slate-900 focus:outline-none ring-2 ring-slate-900/10"
                             />
                           ) : (
-                            <div className="flex items-center justify-between group/cell">
-                              <span className="truncate max-w-[260px] lg:max-w-xs">{tx.cleanPayee}</span>
-                              <span className="text-[10px] text-slate-400 font-normal opacity-0 group-hover/cell:opacity-100 transition-opacity duration-200">
-                                edit
+                            <div className="flex items-center gap-1.5 group/cell">
+                              <span className="truncate max-w-xs">{tx.cleanPayee}</span>
+                              <span className="text-[10px] text-slate-300 opacity-0 group-hover/cell:opacity-100 transition-opacity">
+                                ✎
                               </span>
                             </div>
                           )}
                         </td>
 
-                        {/* Original Memo Cell */}
+                        {/* Original Memo Cell (Editable) */}
                         <td
-                          className="px-4 py-3 text-slate-500 truncate max-w-[220px] lg:max-w-md hidden md:table-cell cursor-pointer text-xs"
-                          title={tx.originalMemo}
+                          className="px-4 py-3 text-slate-500 font-mono text-[11px] hidden md:table-cell cursor-pointer"
                           onClick={() => {
                             if (editingCell?.id !== tx.id || editingCell.field !== 'originalMemo') {
                               handleStartEdit(tx.id, 'originalMemo', tx.originalMemo);
@@ -794,8 +887,8 @@ export default function StatementForgeAppPage() {
                         >
                           {editingCell?.id === tx.id && editingCell.field === 'originalMemo' ? (
                             <input
-                              autoFocus
                               type="text"
+                              autoFocus
                               value={editValue}
                               onChange={(e) => setEditValue(e.target.value)}
                               onKeyDown={(e) => {
@@ -803,14 +896,23 @@ export default function StatementForgeAppPage() {
                                 if (e.key === 'Escape') setEditingCell(null);
                               }}
                               onBlur={handleCommitEdit}
-                              className="w-full bg-white border border-slate-900 rounded-lg px-2.5 py-1 text-xs font-sans text-slate-900 focus:outline-none ring-2 ring-slate-900/10"
+                              className="w-full bg-white border border-slate-900 rounded-lg px-2.5 py-1 text-xs font-mono text-slate-900 focus:outline-none ring-2 ring-slate-900/10"
                             />
                           ) : (
-                            <span>{tx.originalMemo}</span>
+                            <span className="truncate max-w-sm block">{tx.originalMemo}</span>
                           )}
                         </td>
 
-                        {/* Amount Cell (Monospace Tabular Only) */}
+                        {/* Source File Column (Displayed when multiple files loaded) */}
+                        {fileCount > 1 && (
+                          <td className="w-36 px-4 py-3 hidden lg:table-cell">
+                            <span className="inline-block max-w-[130px] truncate text-[10px] font-mono text-slate-500 bg-stone-100 px-2 py-0.5 rounded">
+                              {tx.sourceFile || 'source'}
+                            </span>
+                          </td>
+                        )}
+
+                        {/* Amount Cell (Monospace Tabular Only, Editable) */}
                         <td
                           className="w-36 px-5 py-3 text-right font-mono text-xs tabular-nums font-semibold cursor-pointer"
                           onClick={() => {
@@ -821,8 +923,8 @@ export default function StatementForgeAppPage() {
                         >
                           {editingCell?.id === tx.id && editingCell.field === 'amount' ? (
                             <input
-                              autoFocus
                               type="text"
+                              autoFocus
                               value={editValue}
                               onChange={(e) => setEditValue(e.target.value)}
                               onKeyDown={(e) => {
@@ -862,6 +964,8 @@ export default function StatementForgeAppPage() {
             <div className="flex items-center gap-3">
               <span>Showing <strong>{filteredTransactions.length}</strong> of <strong>{transactions.length}</strong> entries</span>
               <span>•</span>
+              <span>Chronologically sorted across {fileCount} statement{fileCount === 1 ? '' : 's'}</span>
+              <span>•</span>
               <span>Click any Payee or Amount cell to edit</span>
             </div>
             <div className="flex items-center gap-2 text-slate-700">
@@ -886,7 +990,7 @@ export default function StatementForgeAppPage() {
             <span>
               {selectedTxIds.size > 0
                 ? `${selectedTxIds.size} of ${transactions.length} rows selected`
-                : `${transactions.length} transactions ready`}
+                : `${transactions.length} transactions ready (${fileCount} file${fileCount === 1 ? '' : 's'})`}
             </span>
           </div>
           <span className="hidden xl:inline text-stone-300">|</span>
@@ -908,109 +1012,99 @@ export default function StatementForgeAppPage() {
             <span>QuickBooks Online CSV</span>
           </button>
 
-          {/* Secondary Actions */}
+          {/* Secondary Action 1: Xero CSV */}
           <button
             onClick={handleExportXero}
             disabled={transactions.length === 0}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-medium bg-stone-100 hover:bg-stone-200/70 text-slate-700 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-            title="Download Xero CSV"
+            className="flex items-center gap-2 px-3.5 py-2 rounded-full text-xs font-medium bg-stone-100 hover:bg-stone-200 text-slate-700 transition-colors duration-200 disabled:opacity-50 shrink-0"
+            title="Download standard 5-column Xero CSV"
           >
-            <Download className="w-3.5 h-3.5 text-slate-400" />
+            <FileSpreadsheet className="w-3.5 h-3.5 text-slate-500" />
             <span>Xero CSV</span>
           </button>
 
+          {/* Secondary Action 2: 4-Column Ledger */}
           <button
             onClick={handleExport4Column}
             disabled={transactions.length === 0}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-medium bg-stone-100 hover:bg-stone-200/70 text-slate-700 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed shrink-0 hidden sm:flex"
-            title="Download Standard 4-Column CSV"
+            className="hidden sm:flex items-center gap-2 px-3.5 py-2 rounded-full text-xs font-medium bg-stone-100 hover:bg-stone-200 text-slate-700 transition-colors duration-200 disabled:opacity-50 shrink-0"
+            title="Standard 4-column: Date, Description, Debit, Credit"
           >
-            <Download className="w-3.5 h-3.5 text-slate-400" />
-            <span>Standard 4-Column</span>
+            <FileText className="w-3.5 h-3.5 text-slate-500" />
+            <span>Standard Ledger</span>
           </button>
 
+          {/* Secondary Action 3: Copy TSV */}
           <button
             onClick={handleCopyTSV}
             disabled={transactions.length === 0}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-medium bg-stone-100 hover:bg-stone-200/70 text-slate-700 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-            title="Direct copy for Excel or Google Sheets"
+            className="flex items-center gap-2 px-3.5 py-2 rounded-full text-xs font-medium bg-stone-100 hover:bg-stone-200 text-slate-700 transition-colors duration-200 disabled:opacity-50 shrink-0"
+            title="Copy clean TSV to clipboard for direct paste into Excel or Google Sheets"
           >
-            <Copy className="w-3.5 h-3.5 text-slate-400" />
+            <Copy className="w-3.5 h-3.5 text-slate-500" />
             <span>Copy TSV</span>
           </button>
         </div>
       </footer>
 
-      {/* PASTE STATEMENT MODAL */}
+      {/* 5. RAW TEXT PASTE MODAL */}
       {pasteModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/30 backdrop-blur-xs z-50 flex items-center justify-center p-4 transition-all">
-          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 flex flex-col gap-4 shadow-[0_20px_60px_rgb(0,0,0,0.12)] border border-stone-200">
-            <div className="flex items-center justify-between pb-2 border-b border-stone-100">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-2xl bg-amber-50 text-amber-800 flex items-center justify-center">
-                  <FileText className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="font-semibold text-sm text-slate-900">
-                    Paste Chase Statement Text
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Deterministic client-side parsing. Zero server transmission.
-                  </p>
-                </div>
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-50 p-4 transition-all">
+          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl space-y-4 border border-stone-200">
+            <div className="flex items-center justify-between pb-3 border-b border-stone-100">
+              <div className="flex items-center gap-2">
+                <FileText className="w-4 h-4 text-slate-700" />
+                <h3 className="text-sm font-bold text-slate-900">Paste Bank Statement Text</h3>
               </div>
               <button
                 onClick={() => setPasteModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-full hover:bg-stone-100 transition-colors"
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-full hover:bg-stone-100 transition-colors"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
+            <p className="text-xs text-slate-500">
+              Copy and paste statement text directly from your bank checking portal or PDF viewer. The multi-bank router will automatically detect the bank and normalize transactions.
+            </p>
+
             <textarea
-              rows={12}
               value={rawPasteText}
               onChange={(e) => setRawPasteText(e.target.value)}
-              placeholder="Paste raw Chase statement text here..."
-              className="w-full bg-stone-50 rounded-2xl p-4 font-mono text-xs text-slate-800 placeholder-slate-400 focus:bg-white outline-none ring-2 ring-transparent focus:ring-slate-900/10 border border-stone-200 transition-all"
+              placeholder="Paste raw bank checking statement text here..."
+              rows={12}
+              className="w-full bg-stone-50 border border-stone-200 rounded-xl p-3.5 font-mono text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-900/20 resize-none"
             />
 
-            <div className="flex items-center justify-between pt-1">
+            <div className="flex items-center justify-end gap-2.5 pt-2">
               <button
-                onClick={() => setRawPasteText(SAMPLE_CHASE_STATEMENT)}
-                className="text-xs font-medium text-amber-800 hover:text-amber-900 underline"
+                onClick={() => setPasteModalOpen(false)}
+                className="px-4 py-2 text-xs font-medium rounded-full text-slate-600 hover:bg-stone-100 transition-colors"
               >
-                Insert sample fixture text
+                Cancel
               </button>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setPasteModalOpen(false)}
-                  className="px-4 py-2 text-xs font-medium rounded-full text-slate-600 hover:bg-stone-100 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => {
-                    if (rawPasteText.trim()) {
-                      loadStatementText(rawPasteText, 'pasted_chase_statement.txt');
-                      setPasteModalOpen(false);
-                      setRawPasteText('');
-                    }
-                  }}
-                  className="px-4 py-2 text-xs font-semibold rounded-full bg-slate-900 hover:bg-slate-800 text-white shadow-xs transition-colors"
-                >
-                  Parse & Convert
-                </button>
-              </div>
+              <button
+                onClick={() => {
+                  if (rawPasteText.trim()) {
+                    loadSingleStatement(rawPasteText, 'pasted_statement.txt');
+                    setPasteModalOpen(false);
+                    setRawPasteText('');
+                  }
+                }}
+                disabled={!rawPasteText.trim()}
+                className="px-5 py-2 text-xs font-semibold rounded-full bg-slate-900 hover:bg-slate-800 text-white transition-colors disabled:opacity-50"
+              >
+                Parse & Process Statement
+              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* NOTIFICATION TOAST */}
+      {/* 6. TOAST NOTIFICATION */}
       {toastMessage && (
-        <div className="fixed bottom-24 right-6 z-40 bg-slate-900 text-white px-4 py-2.5 rounded-2xl shadow-xl text-xs font-medium flex items-center gap-2.5 animate-fade-in border border-slate-800">
-          <div className="w-2 h-2 rounded-full bg-emerald-400"></div>
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-xs px-4 py-2.5 rounded-full shadow-lg flex items-center gap-2 z-50 animate-fade-in font-medium">
+          <Check className="w-3.5 h-3.5 text-emerald-400" />
           <span>{toastMessage}</span>
         </div>
       )}
