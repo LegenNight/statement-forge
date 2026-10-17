@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "StatementForge — Modern Chase Statement Converter",
-  description: "Secure, client-side bank statement-to-ledger converter tailored for Chase Business Checking. Fast, zero server uploads, QuickBooks & Xero export.",
+  title: "Assay — Small, exact tools for work that gets audited",
+  description: "Small, exact tools for work that gets audited. Zero-backend, deterministic, client-side tools engineered for financial accounting, audit verification, and privacy.",
 };
 
 export default function RootLayout({
@@ -21,7 +21,7 @@ export default function RootLayout({
           rel="stylesheet"
         />
       </head>
-      <body className="bg-gray-50 text-gray-900 antialiased selection:bg-blue-100 selection:text-blue-900 min-h-screen flex flex-col font-sans">
+      <body className="bg-stone-50 text-slate-900 antialiased selection:bg-amber-100 selection:text-amber-900 min-h-screen flex flex-col font-sans">
         {children}
       </body>
     </html>

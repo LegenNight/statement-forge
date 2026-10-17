@@ -1,1011 +1,400 @@
 'use strict';
-'use client';
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React from 'react';
+import Link from 'next/link';
 import {
   FileText,
-  Upload,
-  CheckCircle2,
-  AlertTriangle,
-  Download,
-  Copy,
-  Trash2,
-  Plus,
-  Search,
-  Sparkles,
   ShieldCheck,
-  Check,
-  X,
-  FileSpreadsheet,
-  ArrowDownLeft,
-  ArrowUpRight,
-  FileCheck2,
-  ChevronRight,
+  CheckCircle2,
+  ArrowRight,
+  Sparkles,
   Lock,
-  BarChart3,
+  Cpu,
+  FileSpreadsheet,
+  Download,
+  Terminal,
+  Check,
+  ChevronRight,
+  Layers,
+  ExternalLink,
 } from 'lucide-react';
-import {
-  parseChaseStatement,
-  recalculateReconciliation,
-  formatCurrency,
-  ParsedTransaction,
-  ChaseParseResult,
-  TransactionType,
-} from '@/lib/chaseParser';
-import { SAMPLE_CHASE_STATEMENT } from '@/lib/sampleChaseData';
-import {
-  generateQuickBooksCSV,
-  generateXeroCSV,
-  generateStandard4ColumnCSV,
-  generateTSV,
-  triggerFileDownload,
-} from '@/lib/exportUtils';
-import { extractTextFromFile } from '@/lib/pdfExtractor';
 
-export default function StatementForgePage() {
-  const [statementData, setStatementData] = useState<ChaseParseResult | null>(null);
-  const [transactions, setTransactions] = useState<ParsedTransaction[]>([]);
-  const [selectedTxIds, setSelectedTxIds] = useState<Set<string>>(new Set());
-  const [useCleanPayee, setUseCleanPayee] = useState<boolean>(true);
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [typeFilter, setTypeFilter] = useState<'ALL' | 'CREDIT' | 'DEBIT' | 'CHECK'>('ALL');
-  const [editingCell, setEditingCell] = useState<{ id: string; field: 'cleanPayee' | 'originalMemo' | 'amount' } | null>(null);
-  const [editValue, setEditValue] = useState<string>('');
-  const [isDragging, setIsDragging] = useState<boolean>(false);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [pasteModalOpen, setPasteModalOpen] = useState<boolean>(false);
-  const [rawPasteText, setRawPasteText] = useState<string>('');
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [fileName, setFileName] = useState<string>('chase_business_oct2026.pdf');
-
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // Initialize with sample fixture
-  useEffect(() => {
-    loadStatementText(SAMPLE_CHASE_STATEMENT, 'chase_business_oct2026.pdf');
-  }, []);
-
-  // Show toast notification
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => {
-      setToastMessage((prev) => (prev === msg ? null : prev));
-    }, 3200);
-  };
-
-  // Keyboard shortcuts: "/" to search, "Ctrl+E" / "Cmd+E" to export
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
-        e.preventDefault();
-        searchInputRef.current?.focus();
-      }
-
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'e') {
-        e.preventDefault();
-        handleExportQBO();
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [transactions, useCleanPayee]);
-
-  // Load statement text into state
-  const loadStatementText = (text: string, sourceName: string = 'statement.pdf') => {
-    setIsLoading(true);
-    try {
-      const parsed = parseChaseStatement(text);
-      setStatementData(parsed);
-      setTransactions(parsed.transactions);
-      setSelectedTxIds(new Set());
-      setFileName(sourceName);
-      showToast(`Loaded ${parsed.transactions.length} transactions from ${sourceName}`);
-    } catch (err: any) {
-      console.error(err);
-      showToast('Error parsing statement text. Please check format.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Handle file drop or selection
-  const handleFile = async (file: File) => {
-    setIsLoading(true);
-    try {
-      const text = await extractTextFromFile(file);
-      if (!text || text.trim().length === 0) {
-        showToast('No readable text found in document');
-        setIsLoading(false);
-        return;
-      }
-      loadStatementText(text, file.name);
-    } catch (err) {
-      console.error(err);
-      showToast('Failed to read file client-side.');
-      setIsLoading(false);
-    }
-  };
-
-  const onDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-
-  const onDragLeave = () => {
-    setIsDragging(false);
-  };
-
-  const onDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleFile(e.dataTransfer.files[0]);
-    }
-  };
-
-  // Dynamically recompute reconciliation
-  const currentReconciliation = useMemo(() => {
-    if (!statementData) return null;
-    return recalculateReconciliation(
-      statementData.summary.beginningBalance,
-      statementData.summary.endingBalance,
-      transactions
-    );
-  }, [statementData, transactions]);
-
-  // Summary figures
-  const summaryFigures = useMemo(() => {
-    const beg = statementData?.summary.beginningBalance ?? 0;
-    const end = statementData?.summary.endingBalance ?? 0;
-    const totalIn = transactions
-      .filter((t) => t.type === 'CREDIT')
-      .reduce((s, t) => s + t.rawAmount, 0);
-    const totalOut = transactions
-      .filter((t) => t.type === 'DEBIT' || t.type === 'CHECK')
-      .reduce((s, t) => s + t.rawAmount, 0);
-
-    const creditCount = transactions.filter((t) => t.type === 'CREDIT').length;
-    const debitCount = transactions.filter((t) => t.type === 'DEBIT').length;
-    const checkCount = transactions.filter((t) => t.type === 'CHECK').length;
-
-    return {
-      beginning: beg,
-      in: totalIn,
-      out: totalOut,
-      ending: end,
-      creditCount,
-      debitCount,
-      checkCount,
-    };
-  }, [statementData, transactions]);
-
-  // Filtered transactions for the data grid
-  const filteredTransactions = useMemo(() => {
-    return transactions.filter((tx) => {
-      if (typeFilter !== 'ALL' && tx.type !== typeFilter) {
-        return false;
-      }
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        const matchPayee = tx.cleanPayee.toLowerCase().includes(q);
-        const matchMemo = tx.originalMemo.toLowerCase().includes(q);
-        const matchAmount = tx.amount.toString().includes(q) || tx.rawAmount.toString().includes(q);
-        const matchDate = tx.date.includes(q);
-        const matchCheck = tx.checkNumber?.includes(q);
-        return matchPayee || matchMemo || matchAmount || matchDate || matchCheck;
-      }
-      return true;
-    });
-  }, [transactions, typeFilter, searchQuery]);
-
-  // Checkbox selection
-  const handleToggleSelectAll = () => {
-    if (selectedTxIds.size === filteredTransactions.length && filteredTransactions.length > 0) {
-      setSelectedTxIds(new Set());
-    } else {
-      setSelectedTxIds(new Set(filteredTransactions.map((t) => t.id)));
-    }
-  };
-
-  const handleToggleRow = (id: string) => {
-    const next = new Set(selectedTxIds);
-    if (next.has(id)) {
-      next.delete(id);
-    } else {
-      next.add(id);
-    }
-    setSelectedTxIds(next);
-  };
-
-  const handleDeleteSelected = () => {
-    if (selectedTxIds.size === 0) return;
-    const count = selectedTxIds.size;
-    setTransactions((prev) => prev.filter((t) => !selectedTxIds.has(t.id)));
-    setSelectedTxIds(new Set());
-    showToast(`Deleted ${count} transaction${count > 1 ? 's' : ''}`);
-  };
-
-  const handleDeleteRow = (id: string) => {
-    setTransactions((prev) => prev.filter((t) => t.id !== id));
-    if (selectedTxIds.has(id)) {
-      const next = new Set(selectedTxIds);
-      next.delete(id);
-      setSelectedTxIds(next);
-    }
-    showToast('Row removed');
-  };
-
-  // Inline editing commit
-  const handleStartEdit = (id: string, field: 'cleanPayee' | 'originalMemo' | 'amount', current: any) => {
-    setEditingCell({ id, field });
-    setEditValue(field === 'amount' ? Math.abs(current).toFixed(2) : String(current));
-  };
-
-  const handleCommitEdit = () => {
-    if (!editingCell) return;
-    const { id, field } = editingCell;
-
-    setTransactions((prev) =>
-      prev.map((tx) => {
-        if (tx.id !== id) return tx;
-
-        if (field === 'amount') {
-          const rawVal = parseFloat(editValue.replace(/[$,]/g, '')) || 0;
-          const signedVal = tx.type === 'CREDIT' ? rawVal : -rawVal;
-          return {
-            ...tx,
-            amount: signedVal,
-            rawAmount: rawVal,
-          };
-        } else if (field === 'cleanPayee') {
-          return {
-            ...tx,
-            cleanPayee: editValue.trim() || tx.cleanPayee,
-          };
-        } else if (field === 'originalMemo') {
-          return {
-            ...tx,
-            originalMemo: editValue.trim() || tx.originalMemo,
-          };
-        }
-        return tx;
-      })
-    );
-
-    setEditingCell(null);
-    setEditValue('');
-  };
-
-  // Add manual transaction
-  const handleAddRow = () => {
-    const today = new Date();
-    const mm = String(today.getMonth() + 1).padStart(2, '0');
-    const dd = String(today.getDate()).padStart(2, '0');
-    const newTx: ParsedTransaction = {
-      id: `tx-manual-${Date.now()}`,
-      date: `${mm}/${dd}`,
-      rawDate: `${mm}/${dd}`,
-      type: 'DEBIT',
-      cleanPayee: 'Manual Entry',
-      originalMemo: 'MANUAL ENTRY ADJUSTMENT',
-      amount: -100.0,
-      rawAmount: 100.0,
-      section: 'MANUAL ADJUSTMENTS',
-    };
-    setTransactions((prev) => [newTx, ...prev]);
-    showToast('New ledger row added');
-  };
-
-  // Export handlers
-  const getExportData = () => {
-    if (selectedTxIds.size > 0) {
-      return transactions.filter((t) => selectedTxIds.has(t.id));
-    }
-    return transactions;
-  };
-
-  const handleExportQBO = () => {
-    const data = getExportData();
-    const csv = generateQuickBooksCSV(data, useCleanPayee);
-    const dateStr = statementData?.metadata.startDate.replace(/[\s,]+/g, '_') || 'statement';
-    triggerFileDownload(csv, `Chase_QBO_${dateStr}.csv`);
-    showToast(`Exported ${data.length} transactions for QuickBooks Online`);
-  };
-
-  const handleExportXero = () => {
-    const data = getExportData();
-    const csv = generateXeroCSV(data);
-    const dateStr = statementData?.metadata.startDate.replace(/[\s,]+/g, '_') || 'statement';
-    triggerFileDownload(csv, `Chase_Xero_${dateStr}.csv`);
-    showToast(`Exported ${data.length} transactions for Xero`);
-  };
-
-  const handleExport4Column = () => {
-    const data = getExportData();
-    const csv = generateStandard4ColumnCSV(data, useCleanPayee);
-    const dateStr = statementData?.metadata.startDate.replace(/[\s,]+/g, '_') || 'statement';
-    triggerFileDownload(csv, `Chase_Standard_Ledger_${dateStr}.csv`);
-    showToast(`Exported ${data.length} transactions in 4-column format`);
-  };
-
-  const handleCopyTSV = async () => {
-    const data = getExportData();
-    const tsv = generateTSV(data, useCleanPayee);
-    try {
-      await navigator.clipboard.writeText(tsv);
-      showToast(`Copied ${data.length} transactions to clipboard as TSV`);
-    } catch {
-      showToast('Clipboard access denied');
-    }
-  };
-
+export default function AssayStorefront() {
   return (
-    <div className="flex flex-col min-h-screen bg-gray-50 text-gray-900 font-sans selection:bg-blue-100 selection:text-blue-900">
-      {/* 1. CLEAN MODERN HEADER */}
-      <header className="h-16 bg-white/80 backdrop-blur-md border-b border-gray-100 px-8 flex items-center justify-between sticky top-0 z-30 transition-all">
-        <div className="flex items-center gap-6">
-          {/* Logo & Product Title */}
-          <div className="flex items-center gap-2.5 cursor-default">
-            <div className="w-8 h-8 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center transition-transform hover:scale-105 duration-200">
-              <BarChart3 className="w-4 h-4" />
-            </div>
-            <span className="font-bold text-gray-900 tracking-tight text-lg font-sans">
-              StatementForge
+    <div className="flex flex-col min-h-screen bg-stone-50 text-slate-900 font-sans selection:bg-amber-100 selection:text-amber-900">
+      {/* 1. TOP NAVIGATION */}
+      <header className="h-16 bg-white/80 backdrop-blur-md border-b border-stone-200/80 px-6 sm:px-10 flex items-center justify-between sticky top-0 z-40 transition-all">
+        <div className="flex items-center gap-8">
+          <Link href="/" className="flex items-center gap-2 group">
+            <span className="font-semibold text-slate-900 text-xl tracking-tight">assay</span>
+            <span className="text-[10px] font-mono tracking-widest uppercase px-2 py-0.5 rounded-full bg-stone-100 text-slate-600 border border-stone-200">
+              tools
             </span>
-          </div>
+          </Link>
 
-          {/* Quick Action Navigation */}
-          <div className="hidden sm:flex items-center gap-2 border-l border-gray-100 pl-6">
-            <button
-              onClick={() => loadStatementText(SAMPLE_CHASE_STATEMENT, 'chase_business_oct2026.pdf')}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium rounded-full bg-gray-100/80 hover:bg-gray-100 text-gray-700 transition-colors duration-200"
-              title="Load sample Chase business checking statement"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-blue-600" />
-              <span>Load Sample Chase Statement</span>
-            </button>
-
-            <button
-              onClick={() => setPasteModalOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full bg-transparent hover:bg-gray-100/70 text-gray-600 hover:text-gray-900 transition-colors duration-200"
-              title="Paste raw text directly from PDF or checking portal"
-            >
-              <FileText className="w-3.5 h-3.5 text-gray-400" />
-              <span>Paste Statement</span>
-            </button>
-
-            <button
-              onClick={() => {
-                setTransactions([]);
-                setSelectedTxIds(new Set());
-                setStatementData(null);
-                showToast('Workspace cleared');
-              }}
-              className="px-2.5 py-1.5 text-xs font-medium rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100/70 transition-colors duration-200"
-              title="Reset workspace"
-            >
-              Clear
-            </button>
-          </div>
+          <nav className="hidden md:flex items-center gap-6 text-xs font-medium text-slate-600">
+            <a href="#tools" className="hover:text-slate-900 transition-colors">
+              Tools
+            </a>
+            <a href="#architecture" className="hover:text-slate-900 transition-colors">
+              Architecture
+            </a>
+            <a href="#pipeline" className="hover:text-slate-900 transition-colors">
+              Pipeline
+            </a>
+            <a href="#privacy" className="hover:text-slate-900 transition-colors">
+              Privacy
+            </a>
+          </nav>
         </div>
 
-        {/* Subtle Right-Aligned System Status Indicator */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-4">
           <div
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md cursor-default text-xs text-gray-500 font-medium"
-            title="Files and statements are parsed 100% in local memory. No server uploads."
+            className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-slate-500 font-medium"
+            title="All tools execute 100% in local browser memory"
           >
-            <ShieldCheck className="w-4 h-4 text-emerald-500 shrink-0" />
-            <span>Local Processing Active</span>
+            <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>Zero-Server Engine</span>
           </div>
+
+          <Link
+            href="/tools/statementforge"
+            className="flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white transition-all duration-200 shadow-sm hover:shadow"
+          >
+            <span>Open StatementForge</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
         </div>
       </header>
 
-      {/* 2. MAIN WORKSPACE */}
-      <div className="max-w-7xl w-full mx-auto px-6 py-8 space-y-6 flex-1 pb-32">
-        {/* Top Info Banner: Account info + Reconciliation Badge */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500 font-sans">
-            <span className="font-medium text-gray-400">Account:</span>
-            <span className="font-mono font-medium text-gray-800 bg-white px-2.5 py-1 rounded-lg shadow-[0_2px_8px_rgb(0,0,0,0.02)]">
-              {statementData ? statementData.metadata.accountNumber : '0000008412'}
-            </span>
-            <span className="text-gray-300">•</span>
-            <span className="font-medium text-gray-700">
-              {statementData?.metadata.statementPeriod || 'October 01, 2026 – October 31, 2026'}
-            </span>
-            <span className="text-gray-300 hidden lg:inline">•</span>
-            <span className="text-gray-500 hidden lg:inline">
-              {statementData?.metadata.statementType || 'Chase Business Complete Checking'}
+      {/* 2. HERO SECTION */}
+      <main className="flex-1">
+        <section className="relative px-6 sm:px-10 pt-20 pb-20 max-w-5xl mx-auto text-center">
+          {/* Subtle Tag */}
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white border border-stone-200/90 shadow-2xs mb-8">
+            <span className="w-2 h-2 rounded-full bg-amber-600"></span>
+            <span className="text-xs font-mono uppercase tracking-wider text-slate-600">
+              Assay Suite • Local-First Financial Software
             </span>
           </div>
 
-          {/* Crisp, Borderless Reconciliation Alert Badge */}
-          <div>
-            {currentReconciliation?.status === 'BALANCED' ? (
-              <div
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-50 text-emerald-700 text-xs font-medium cursor-default transition-all"
-                title="Beginning + In - Out matches Statement Ending Balance to the cent"
-              >
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>
-                  <strong>[✓ RECONCILED: $0.00 VARIANCE]</strong> — Ending balance perfectly matches statement summary
-                </span>
+          {/* Exact Required Copy Headline */}
+          <h1 className="text-4xl sm:text-6xl font-bold tracking-tight text-slate-900 max-w-3xl mx-auto leading-[1.12]">
+            Small, exact tools for work that gets audited.
+          </h1>
+
+          {/* Subtitle */}
+          <p className="mt-6 text-base sm:text-lg text-slate-600 max-w-2xl mx-auto leading-relaxed">
+            Financial reconciliations, regulatory statement conversions, and ledger preparations executed entirely in your browser memory. No cloud servers, no hallucinating LLMs, zero data retention.
+          </p>
+
+          {/* Primary CTA Buttons */}
+          <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-3.5">
+            <Link
+              href="/tools/statementforge"
+              className="w-full sm:w-auto flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-full text-sm font-semibold bg-slate-900 hover:bg-slate-800 text-white transition-all duration-200 shadow-sm hover:shadow-md"
+            >
+              <span>Launch StatementForge</span>
+              <ArrowRight className="w-4 h-4" />
+            </Link>
+
+            <a
+              href="#architecture"
+              className="w-full sm:w-auto flex items-center justify-center gap-2 px-6 py-3.5 rounded-full text-sm font-medium bg-white hover:bg-stone-100 text-slate-700 border border-stone-200 transition-colors duration-200"
+            >
+              <span>Audit Architecture</span>
+              <ChevronRight className="w-4 h-4 text-slate-400" />
+            </a>
+          </div>
+
+          {/* Trust Metrics Bar */}
+          <div className="mt-16 grid grid-cols-1 sm:grid-cols-3 gap-4 pt-10 border-t border-stone-200 text-left">
+            <div className="bg-white/60 p-5 rounded-2xl border border-stone-200/60 shadow-2xs">
+              <div className="font-mono text-xl font-bold text-slate-900 tracking-tight">0 bytes</div>
+              <div className="text-xs font-semibold text-slate-700 mt-1">Transmitted to servers</div>
+              <div className="text-xs text-slate-500 mt-1 leading-normal">
+                All parsing, OCR and math run inside local JavaScript memory.
               </div>
-            ) : (
-              <div
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-50 text-amber-800 text-xs font-medium cursor-default transition-all"
-                title={currentReconciliation?.details || 'Discrepancy detected'}
-              >
-                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                <span>
-                  <strong>[⚠ DISCREPANCY: {formatCurrency(currentReconciliation?.diff ?? 0, true)} - REVIEW FLAGGED ROWS]</strong>
-                </span>
+            </div>
+
+            <div className="bg-white/60 p-5 rounded-2xl border border-stone-200/60 shadow-2xs">
+              <div className="font-mono text-xl font-bold text-emerald-700 tracking-tight">$0.00</div>
+              <div className="text-xs font-semibold text-slate-700 mt-1">Variance verification</div>
+              <div className="text-xs text-slate-500 mt-1 leading-normal">
+                Deterministic cent-precision math confirms balance integrity before export.
               </div>
-            )}
-          </div>
-        </div>
+            </div>
 
-        {/* 4 SUMMARY METRICS CARDS (Borderless, Floating with Diffuse Shadow) */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {/* Card 1: Beginning Balance */}
-          <div className="bg-white rounded-2xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.03)] hover:shadow-[0_8px_30px_rgb(0,0,0,0.06)] transition-all duration-200">
-            <div className="text-xs font-medium text-gray-400 uppercase tracking-wider font-sans">
-              Beginning Balance
-            </div>
-            <div className="mt-3 text-2xl font-bold text-gray-900 font-mono tracking-tight tabular-nums">
-              {formatCurrency(summaryFigures.beginning)}
-            </div>
-            <div className="mt-1.5 text-xs text-gray-400 font-sans">
-              Statement opening balance
-            </div>
-          </div>
-
-          {/* Card 2: Deposits (Inflow) */}
-          <div className="bg-white rounded-2xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.03)] hover:shadow-[0_8px_30px_rgb(0,0,0,0.06)] transition-all duration-200">
-            <div className="text-xs font-semibold text-emerald-600 uppercase tracking-wider font-sans flex items-center gap-1">
-              <ArrowDownLeft className="w-3.5 h-3.5" />
-              <span>In (Deposits)</span>
-            </div>
-            <div className="mt-3 text-2xl font-bold text-emerald-600 font-mono tracking-tight tabular-nums">
-              {formatCurrency(summaryFigures.in, true)}
-            </div>
-            <div className="mt-1.5 text-xs text-gray-400 font-sans">
-              {summaryFigures.creditCount} incoming deposit{summaryFigures.creditCount === 1 ? '' : 's'}
-            </div>
-          </div>
-
-          {/* Card 3: Outflow (Debits + Checks) */}
-          <div className="bg-white rounded-2xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.03)] hover:shadow-[0_8px_30px_rgb(0,0,0,0.06)] transition-all duration-200">
-            <div className="text-xs font-medium text-gray-400 uppercase tracking-wider font-sans flex items-center gap-1">
-              <ArrowUpRight className="w-3.5 h-3.5" />
-              <span>Out (Debits + Checks)</span>
-            </div>
-            <div className="mt-3 text-2xl font-bold text-gray-900 font-mono tracking-tight tabular-nums">
-              {formatCurrency(-summaryFigures.out, true)}
-            </div>
-            <div className="mt-1.5 text-xs text-gray-400 font-sans">
-              {summaryFigures.debitCount} withdrawals • {summaryFigures.checkCount} checks paid
-            </div>
-          </div>
-
-          {/* Card 4: Ending Balance */}
-          <div className="bg-white rounded-2xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.03)] hover:shadow-[0_8px_30px_rgb(0,0,0,0.06)] transition-all duration-200">
-            <div className="text-xs font-semibold text-blue-600 uppercase tracking-wider font-sans flex items-center justify-between">
-              <span>Ending Balance</span>
-              <FileCheck2 className="w-3.5 h-3.5 text-blue-500" />
-            </div>
-            <div className="mt-3 text-2xl font-bold text-blue-900 font-mono tracking-tight tabular-nums">
-              {formatCurrency(summaryFigures.ending)}
-            </div>
-            <div className="mt-1.5 text-xs text-blue-600/70 font-sans">
-              Closing reconciliation target
-            </div>
-          </div>
-        </div>
-
-        {/* Drag & Drop Card (Borderless, Soft Shadow) */}
-        <div
-          onDragOver={onDragOver}
-          onDragLeave={onDragLeave}
-          onDrop={onDrop}
-          onClick={() => fileInputRef.current?.click()}
-          className={`bg-white rounded-2xl p-4.5 shadow-[0_8px_30px_rgb(0,0,0,0.02)] transition-all duration-200 cursor-pointer flex items-center justify-between group ${
-            isDragging
-              ? 'ring-2 ring-blue-500 bg-blue-50/20'
-              : 'hover:shadow-[0_8px_30px_rgb(0,0,0,0.05)]'
-          }`}
-        >
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".pdf,.txt,text/plain,application/pdf"
-            className="hidden"
-            onChange={(e) => {
-              if (e.target.files && e.target.files[0]) {
-                handleFile(e.target.files[0]);
-              }
-            }}
-          />
-          <div className="flex items-center gap-3.5">
-            <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center group-hover:scale-105 transition-transform duration-200">
-              <Upload className="w-4 h-4" />
-            </div>
-            <div className="flex flex-col">
-              <div className="text-xs font-semibold text-gray-800 flex items-center gap-2">
-                <span>Drop Chase Business Statement (PDF or TXT)</span>
-                <span className="text-[10px] font-medium text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">
-                  Zero upload
-                </span>
-              </div>
-              <div className="text-[11px] text-gray-400">
-                Active statement: <span className="font-mono text-gray-600">{fileName}</span>
+            <div className="bg-white/60 p-5 rounded-2xl border border-stone-200/60 shadow-2xs">
+              <div className="font-mono text-xl font-bold text-amber-800 tracking-tight">Multi-Page</div>
+              <div className="text-xs font-semibold text-slate-700 mt-1">Stitching & Sanitization</div>
+              <div className="text-xs text-slate-500 mt-1 leading-normal">
+                Eliminates repetitive bank headers and repairs broken across-page memos.
               </div>
             </div>
           </div>
-          <div className="text-xs font-medium text-blue-600 group-hover:text-blue-700 flex items-center gap-1 px-3 py-1.5 rounded-full hover:bg-blue-50 transition-colors duration-200">
-            <span>Browse files</span>
-            <ChevronRight className="w-3.5 h-3.5" />
-          </div>
-        </div>
+        </section>
 
-        {/* 3. DATA GRID & CONTROLS CONTAINER (Smooth, Rounded-2xl, Diffuse Shadow) */}
-        <div className="bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] overflow-hidden transition-all">
-          {/* Table Toolbar & Filters */}
-          <div className="p-5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 border-b border-gray-100/70">
-            <div className="flex items-center gap-3 flex-1 max-w-lg">
-              {/* Search Input (Rounded-full, Subtle Background) */}
-              <div className="relative flex-1">
-                <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  ref={searchInputRef}
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search payees, memos, amounts (Press '/')"
-                  className="w-full bg-gray-50/80 hover:bg-gray-50 focus:bg-white rounded-full pl-9 pr-8 py-2 text-xs font-sans text-gray-800 placeholder-gray-400 outline-none ring-1 ring-transparent focus:ring-2 focus:ring-blue-500/20 transition-all duration-200"
-                />
-                {searchQuery && (
-                  <button
-                    onClick={() => setSearchQuery('')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+        {/* 3. FEATURED PRODUCT: STATEMENTFORGE */}
+        <section id="tools" className="px-6 sm:px-10 py-16 max-w-5xl mx-auto">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <span className="text-xs font-mono uppercase tracking-wider text-amber-800 font-medium">
+                Active Production Tool
+              </span>
+              <h2 className="text-2xl font-bold text-slate-900 mt-1">StatementForge</h2>
+            </div>
+            <Link
+              href="/tools/statementforge"
+              className="text-xs font-semibold text-slate-900 hover:text-slate-700 flex items-center gap-1 group"
+            >
+              <span>Open tool</span>
+              <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
+            </Link>
+          </div>
+
+          {/* Product Showcase Card */}
+          <div className="bg-white rounded-3xl p-8 sm:p-10 shadow-[0_12px_40px_rgb(0,0,0,0.04)] border border-stone-200/80 transition-all hover:border-stone-300">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+              <div className="lg:col-span-7 space-y-5">
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200/60 text-xs font-medium">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Chase Business Checking Specialist</span>
+                </div>
+
+                <h3 className="text-xl sm:text-2xl font-bold text-slate-900 leading-snug">
+                  Convert Chase Business PDFs to verified ledger rows in seconds.
+                </h3>
+
+                <p className="text-sm text-slate-600 leading-relaxed">
+                  StatementForge extracts deposits, electronic withdrawals, and checks from standard Chase Business Checking PDFs. It continuously checks ledger debits and credits against your beginning and ending balances—guaranteeing a $0.00 mathematical variance before you export.
+                </p>
+
+                <div className="space-y-2.5 pt-2">
+                  <div className="flex items-start gap-2.5 text-xs text-slate-700">
+                    <Check className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                    <span><strong>Multi-Page Header Sanitization:</strong> Automatically filters repeated page banners, address lines, and pagination tags.</span>
+                  </div>
+                  <div className="flex items-start gap-2.5 text-xs text-slate-700">
+                    <Check className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                    <span><strong>Clean Merchant Names:</strong> Normalizes POS junk text like <code>POS DEBIT 8421 SQUARE INC</code> into readable payees.</span>
+                  </div>
+                  <div className="flex items-start gap-2.5 text-xs text-slate-700">
+                    <Check className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                    <span><strong>Standard Output Formats:</strong> Export one-click QuickBooks Online CSV, Xero CSV, 4-Column Ledger, or TSV for Excel.</span>
+                  </div>
+                </div>
+
+                <div className="pt-4 flex flex-wrap items-center gap-3">
+                  <Link
+                    href="/tools/statementforge"
+                    className="flex items-center gap-2 px-5 py-2.5 rounded-full text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white transition-all shadow-sm hover:shadow"
                   >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
+                    <span>Open StatementForge</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </Link>
+
+                  <Link
+                    href="/tools/statementforge"
+                    className="flex items-center gap-1.5 px-4 py-2.5 rounded-full text-xs font-medium bg-stone-100 hover:bg-stone-200 text-slate-700 transition-colors"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-700" />
+                    <span>Try Multi-Page Sample</span>
+                  </Link>
+                </div>
               </div>
 
-              {/* Segmented Filter Pills */}
-              <div className="flex items-center bg-gray-100/80 p-1 rounded-full text-xs font-medium">
-                {(['ALL', 'CREDIT', 'DEBIT', 'CHECK'] as const).map((tab) => {
-                  const count = tab === 'ALL'
-                    ? transactions.length
-                    : transactions.filter((t) => t.type === tab).length;
-                  const label = tab === 'ALL' ? 'All' : tab === 'CREDIT' ? 'In' : tab === 'DEBIT' ? 'Out' : 'Checks';
-                  return (
-                    <button
-                      key={tab}
-                      onClick={() => setTypeFilter(tab)}
-                      className={`px-3 py-1 rounded-full transition-all duration-200 ${
-                        typeFilter === tab
-                          ? 'bg-white text-gray-900 font-semibold shadow-xs'
-                          : 'text-gray-500 hover:text-gray-900'
-                      }`}
-                    >
-                      {label} <span className="text-[10px] text-gray-400 font-normal">({count})</span>
-                    </button>
-                  );
-                })}
+              {/* Product Preview Mockup */}
+              <div className="lg:col-span-5 bg-stone-50 rounded-2xl p-5 border border-stone-200/90 space-y-3 font-mono text-xs">
+                <div className="flex items-center justify-between border-b border-stone-200 pb-3">
+                  <div className="flex items-center gap-2 text-[11px] text-slate-600 font-sans font-medium">
+                    <FileText className="w-3.5 h-3.5 text-slate-500" />
+                    <span>chase_statement_oct2026.pdf</span>
+                  </div>
+                  <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-sans font-semibold">
+                    ✓ Balanced
+                  </span>
+                </div>
+
+                {/* Telemetry Mockup */}
+                <div className="grid grid-cols-2 gap-2 text-[11px]">
+                  <div className="bg-white p-2.5 rounded-xl border border-stone-200 shadow-2xs">
+                    <span className="text-slate-400 font-sans text-[10px]">Beginning</span>
+                    <div className="font-bold text-slate-800 mt-0.5">$14,850.20</div>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-xl border border-stone-200 shadow-2xs">
+                    <span className="text-slate-400 font-sans text-[10px]">Ending</span>
+                    <div className="font-bold text-slate-800 mt-0.5">$18,274.80</div>
+                  </div>
+                </div>
+
+                {/* Ledger preview snippet */}
+                <div className="bg-white rounded-xl border border-stone-200 overflow-hidden shadow-2xs text-[11px]">
+                  <div className="bg-stone-100/70 px-3 py-1.5 text-[10px] text-slate-500 font-sans uppercase font-medium border-b border-stone-200 flex justify-between">
+                    <span>Payee</span>
+                    <span>Amount</span>
+                  </div>
+                  <div className="divide-y divide-stone-100">
+                    <div className="px-3 py-2 flex justify-between items-center">
+                      <span className="text-slate-800 font-sans truncate pr-2">Stripe Payout</span>
+                      <span className="text-emerald-700 font-semibold tabular-nums">+$4,250.00</span>
+                    </div>
+                    <div className="px-3 py-2 flex justify-between items-center">
+                      <span className="text-slate-800 font-sans truncate pr-2">Google Cloud Platform</span>
+                      <span className="text-slate-800 tabular-nums">-$1,840.50</span>
+                    </div>
+                    <div className="px-3 py-2 flex justify-between items-center">
+                      <span className="text-slate-800 font-sans truncate pr-2">Office Depot</span>
+                      <span className="text-slate-800 tabular-nums">-$245.90</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="text-[10px] text-slate-500 font-sans text-center pt-1">
+                  13 verified rows • 0 server roundtrips
+                </div>
               </div>
             </div>
-
-            <div className="flex items-center gap-2 shrink-0">
-              {/* Clean Payees Pill */}
-              <button
-                onClick={() => setUseCleanPayee(!useCleanPayee)}
-                className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium rounded-full transition-all duration-200 ${
-                  useCleanPayee
-                    ? 'bg-blue-50 text-blue-700 hover:bg-blue-100/70'
-                    : 'bg-gray-100/80 text-gray-600 hover:bg-gray-100'
-                }`}
-                title="Toggle merchant name cleaning"
-              >
-                <Sparkles className="w-3.5 h-3.5 text-blue-600" />
-                <span>Clean Payees</span>
-                <span
-                  className={`text-[10px] font-semibold px-1.5 py-0.2 rounded-full ${
-                    useCleanPayee ? 'bg-blue-200/60 text-blue-800' : 'bg-gray-200 text-gray-500'
-                  }`}
-                >
-                  {useCleanPayee ? 'ON' : 'OFF'}
-                </span>
-              </button>
-
-              {/* Add Entry */}
-              <button
-                onClick={handleAddRow}
-                className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium rounded-full bg-gray-100/80 hover:bg-gray-100 text-gray-700 transition-colors duration-200"
-                title="Add a manual entry"
-              >
-                <Plus className="w-3.5 h-3.5 text-gray-500" />
-                <span className="hidden sm:inline">Add Entry</span>
-              </button>
-
-              {/* Batch Delete */}
-              {selectedTxIds.size > 0 && (
-                <button
-                  onClick={handleDeleteSelected}
-                  className="flex items-center gap-1 px-3.5 py-1.5 text-xs font-medium rounded-full bg-rose-50 hover:bg-rose-100 text-rose-700 transition-colors duration-200"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Delete ({selectedTxIds.size})</span>
-                </button>
-              )}
-            </div>
           </div>
+        </section>
 
-          {/* Table Container (Borderless, Ultra-Faint Horizontal Dividers) */}
-          <div className="overflow-x-auto max-h-[calc(100vh-340px)] min-h-[340px]">
-            <table className="w-full text-left border-collapse font-sans text-xs">
-              <thead className="bg-gray-50/50 text-gray-500 sticky top-0 z-10 text-[11px] font-medium uppercase tracking-wider select-none border-b border-gray-100">
-                <tr>
-                  <th className="w-10 px-5 py-3.5 text-center">
-                    <input
-                      type="checkbox"
-                      checked={
-                        filteredTransactions.length > 0 &&
-                        selectedTxIds.size === filteredTransactions.length
-                      }
-                      onChange={handleToggleSelectAll}
-                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                    />
-                  </th>
-                  <th className="w-24 px-4 py-3.5">Date</th>
-                  <th className="w-28 px-4 py-3.5">Type</th>
-                  <th className="px-4 py-3.5">
-                    {useCleanPayee ? 'Clean Payee (Editable)' : 'Merchant Payee'}
-                  </th>
-                  <th className="px-4 py-3.5 hidden md:table-cell">Original Memo</th>
-                  <th className="w-36 px-5 py-3.5 text-right">Amount ($)</th>
-                  <th className="w-16 px-4 py-3.5 text-center">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {filteredTransactions.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="text-center py-20 text-gray-400">
-                      <div className="flex flex-col items-center justify-center gap-2">
-                        <FileSpreadsheet className="w-10 h-10 text-gray-300" />
-                        <p className="text-sm font-medium text-gray-600">No transactions match the current filter.</p>
-                        <button
-                          onClick={() => {
-                            setSearchQuery('');
-                            setTypeFilter('ALL');
-                            loadStatementText(SAMPLE_CHASE_STATEMENT, 'chase_business_oct2026.pdf');
-                          }}
-                          className="mt-2 text-xs text-blue-600 hover:text-blue-700 font-medium flex items-center gap-1"
-                        >
-                          <Sparkles className="w-3.5 h-3.5" />
-                          Reload Chase Sample Statement
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ) : (
-                  filteredTransactions.map((tx) => {
-                    const isSelected = selectedTxIds.has(tx.id);
-                    const isCredit = tx.type === 'CREDIT';
-                    const isCheck = tx.type === 'CHECK';
-
-                    return (
-                      <tr
-                        key={tx.id}
-                        className={`transition-colors duration-150 group ${
-                          isSelected
-                            ? 'bg-blue-50/50 hover:bg-blue-50/70'
-                            : 'hover:bg-gray-50/60'
-                        } ${tx.isFlagged ? 'bg-amber-50/40' : ''}`}
-                      >
-                        {/* Checkbox */}
-                        <td className="w-10 px-5 py-3 text-center">
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => handleToggleRow(tx.id)}
-                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                          />
-                        </td>
-
-                        {/* Date (Monospace Tabular Only) */}
-                        <td className="w-24 px-4 py-3 text-gray-600 font-mono text-xs tabular-nums font-medium">
-                          {tx.date}
-                        </td>
-
-                        {/* Type Badge */}
-                        <td className="w-28 px-4 py-3">
-                          {isCredit && (
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-emerald-50 text-emerald-700">
-                              + Credit
-                            </span>
-                          )}
-                          {!isCredit && !isCheck && (
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-gray-100 text-gray-700">
-                              - Debit
-                            </span>
-                          )}
-                          {isCheck && (
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-blue-50 text-blue-700">
-                              Check {tx.checkNumber ? `#${tx.checkNumber}` : ''}
-                            </span>
-                          )}
-                        </td>
-
-                        {/* Clean Payee Cell (Editable) */}
-                        <td
-                          className="px-4 py-3 text-gray-900 font-medium cursor-pointer"
-                          onClick={() => {
-                            if (editingCell?.id !== tx.id || editingCell.field !== 'cleanPayee') {
-                              handleStartEdit(tx.id, 'cleanPayee', tx.cleanPayee);
-                            }
-                          }}
-                        >
-                          {editingCell?.id === tx.id && editingCell.field === 'cleanPayee' ? (
-                            <input
-                              autoFocus
-                              type="text"
-                              value={editValue}
-                              onChange={(e) => setEditValue(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') handleCommitEdit();
-                                if (e.key === 'Escape') setEditingCell(null);
-                              }}
-                              onBlur={handleCommitEdit}
-                              className="w-full bg-white border border-blue-500 rounded-lg px-2.5 py-1 text-xs font-sans text-gray-900 focus:outline-none ring-2 ring-blue-100"
-                            />
-                          ) : (
-                            <div className="flex items-center justify-between group/cell">
-                              <span className="truncate max-w-[260px] lg:max-w-xs">{tx.cleanPayee}</span>
-                              <span className="text-[10px] text-gray-400 font-normal opacity-0 group-hover/cell:opacity-100 transition-opacity duration-200">
-                                edit
-                              </span>
-                            </div>
-                          )}
-                        </td>
-
-                        {/* Original Memo Cell */}
-                        <td
-                          className="px-4 py-3 text-gray-400 truncate max-w-[220px] lg:max-w-md hidden md:table-cell cursor-pointer text-xs"
-                          title={tx.originalMemo}
-                          onClick={() => {
-                            if (editingCell?.id !== tx.id || editingCell.field !== 'originalMemo') {
-                              handleStartEdit(tx.id, 'originalMemo', tx.originalMemo);
-                            }
-                          }}
-                        >
-                          {editingCell?.id === tx.id && editingCell.field === 'originalMemo' ? (
-                            <input
-                              autoFocus
-                              type="text"
-                              value={editValue}
-                              onChange={(e) => setEditValue(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') handleCommitEdit();
-                                if (e.key === 'Escape') setEditingCell(null);
-                              }}
-                              onBlur={handleCommitEdit}
-                              className="w-full bg-white border border-blue-500 rounded-lg px-2.5 py-1 text-xs font-sans text-gray-900 focus:outline-none ring-2 ring-blue-100"
-                            />
-                          ) : (
-                            <span>{tx.originalMemo}</span>
-                          )}
-                        </td>
-
-                        {/* Amount Cell (Monospace Tabular Only) */}
-                        <td
-                          className="w-36 px-5 py-3 text-right font-mono text-xs tabular-nums font-semibold cursor-pointer"
-                          onClick={() => {
-                            if (editingCell?.id !== tx.id || editingCell.field !== 'amount') {
-                              handleStartEdit(tx.id, 'amount', tx.rawAmount);
-                            }
-                          }}
-                        >
-                          {editingCell?.id === tx.id && editingCell.field === 'amount' ? (
-                            <input
-                              autoFocus
-                              type="text"
-                              value={editValue}
-                              onChange={(e) => setEditValue(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') handleCommitEdit();
-                                if (e.key === 'Escape') setEditingCell(null);
-                              }}
-                              onBlur={handleCommitEdit}
-                              className="w-28 bg-white border border-blue-500 rounded-lg px-2.5 py-1 text-xs font-mono text-right text-gray-900 focus:outline-none ring-2 ring-blue-100 ml-auto"
-                            />
-                          ) : (
-                            <span className={isCredit ? 'text-emerald-600' : 'text-gray-900'}>
-                              {formatCurrency(tx.amount, true)}
-                            </span>
-                          )}
-                        </td>
-
-                        {/* Action Column */}
-                        <td className="w-16 px-4 py-3 text-center">
-                          <button
-                            onClick={() => handleDeleteRow(tx.id)}
-                            className="text-gray-300 hover:text-rose-600 p-1.5 rounded-full hover:bg-rose-50 transition-colors duration-200 opacity-0 group-hover:opacity-100"
-                            title="Delete this transaction"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Table Footer */}
-          <div className="bg-gray-50/40 px-6 py-3.5 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-gray-500 border-t border-gray-100">
-            <div className="flex items-center gap-3">
-              <span>Showing <strong>{filteredTransactions.length}</strong> of <strong>{transactions.length}</strong> entries</span>
-              <span>•</span>
-              <span>Click any Payee or Amount cell to edit</span>
-            </div>
-            <div className="flex items-center gap-2 text-gray-600">
-              <span>Net Ledger Flow:</span>
-              <strong
-                className={`font-mono font-semibold tabular-nums ${
-                  summaryFigures.in - summaryFigures.out >= 0 ? 'text-emerald-600' : 'text-amber-600'
-                }`}
-              >
-                {formatCurrency(summaryFigures.in - summaryFigures.out, true)}
-              </strong>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* 4. EXPORT ACTION TOOLBAR (Floating Modern Card at Bottom) */}
-      <footer className="fixed bottom-5 left-1/2 -translate-x-1/2 max-w-5xl w-[calc(100%-2rem)] bg-white/95 backdrop-blur-md rounded-2xl px-6 py-3.5 shadow-[0_12px_40px_rgb(0,0,0,0.08)] border border-gray-100 flex items-center justify-between z-30 transition-all">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 text-xs text-gray-600 font-medium">
-            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-            <span>
-              {selectedTxIds.size > 0
-                ? `${selectedTxIds.size} of ${transactions.length} rows selected`
-                : `${transactions.length} transactions ready`}
+        {/* 4. ARCHITECTURE & PHILOSOPHY */}
+        <section id="architecture" className="px-6 sm:px-10 py-16 max-w-5xl mx-auto border-t border-stone-200">
+          <div className="text-center max-w-2xl mx-auto mb-14">
+            <span className="text-xs font-mono uppercase tracking-wider text-amber-800 font-medium">
+              Core Principles
             </span>
+            <h2 className="text-3xl font-bold text-slate-900 mt-2">
+              Why Assay tools don’t touch the cloud.
+            </h2>
+            <p className="text-sm text-slate-600 mt-3 leading-relaxed">
+              Accounting records and bank statements are sensitive by definition. We built Assay on physical zero-retention architecture.
+            </p>
           </div>
-          <span className="hidden xl:inline text-gray-300">|</span>
-          <span className="hidden xl:inline text-xs text-gray-400">
-            Press <kbd className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 font-mono text-[11px]">Ctrl+E</kbd> for instant export
-          </span>
-        </div>
 
-        {/* Action Buttons */}
-        <div className="flex items-center gap-2.5 overflow-x-auto py-1">
-          {/* Primary Action Button (Premium Financial Blue) */}
-          <button
-            onClick={handleExportQBO}
-            disabled={transactions.length === 0}
-            className="flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white transition-all duration-200 shadow-sm hover:shadow disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-            title="Download QuickBooks Online CSV"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>QuickBooks Online CSV</span>
-          </button>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="bg-white p-7 rounded-2xl border border-stone-200 shadow-[0_8px_30px_rgb(0,0,0,0.02)]">
+              <div className="w-10 h-10 rounded-xl bg-stone-100 flex items-center justify-center text-slate-800 mb-5">
+                <Cpu className="w-5 h-5 text-amber-800" />
+              </div>
+              <h3 className="text-base font-bold text-slate-900">Deterministic Engine</h3>
+              <p className="text-xs text-slate-600 mt-2.5 leading-relaxed">
+                No LLM hallucinations or generative guesses. Every date, memo, and cent is parsed using rigid regular expressions and strict double-entry math.
+              </p>
+            </div>
 
-          {/* Secondary Actions */}
-          <button
-            onClick={handleExportXero}
-            disabled={transactions.length === 0}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-medium bg-gray-100/80 hover:bg-gray-100 text-gray-700 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-            title="Download Xero CSV"
-          >
-            <Download className="w-3.5 h-3.5 text-gray-400" />
-            <span>Xero CSV</span>
-          </button>
+            <div className="bg-white p-7 rounded-2xl border border-stone-200 shadow-[0_8px_30px_rgb(0,0,0,0.02)]">
+              <div className="w-10 h-10 rounded-xl bg-stone-100 flex items-center justify-center text-slate-800 mb-5">
+                <Lock className="w-5 h-5 text-emerald-700" />
+              </div>
+              <h3 className="text-base font-bold text-slate-900">Zero Cloud Uploads</h3>
+              <p className="text-xs text-slate-600 mt-2.5 leading-relaxed">
+                PDF text extraction and normalization execute entirely within Web Workers and browser memory. Your bank data never crosses a network cable.
+              </p>
+            </div>
 
-          <button
-            onClick={handleExport4Column}
-            disabled={transactions.length === 0}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-medium bg-gray-100/80 hover:bg-gray-100 text-gray-700 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed shrink-0 hidden sm:flex"
-            title="Download Standard 4-Column CSV"
-          >
-            <Download className="w-3.5 h-3.5 text-gray-400" />
-            <span>Standard 4-Column</span>
-          </button>
+            <div className="bg-white p-7 rounded-2xl border border-stone-200 shadow-[0_8px_30px_rgb(0,0,0,0.02)]">
+              <div className="w-10 h-10 rounded-xl bg-stone-100 flex items-center justify-center text-slate-800 mb-5">
+                <FileSpreadsheet className="w-5 h-5 text-slate-800" />
+              </div>
+              <h3 className="text-base font-bold text-slate-900">Audit-Ready Ledger</h3>
+              <p className="text-xs text-slate-600 mt-2.5 leading-relaxed">
+                Immediate reconciliation validation ensures Beginning + In - Out matches your statement’s printed ending balance before you push to QuickBooks or Xero.
+              </p>
+            </div>
+          </div>
+        </section>
 
-          <button
-            onClick={handleCopyTSV}
-            disabled={transactions.length === 0}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-medium bg-gray-100/80 hover:bg-gray-100 text-gray-700 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-            title="Direct copy for Excel or Google Sheets"
-          >
-            <Copy className="w-3.5 h-3.5 text-gray-400" />
-            <span>Copy TSV</span>
-          </button>
+        {/* 5. ROADMAP / PIPELINE */}
+        <section id="pipeline" className="px-6 sm:px-10 py-16 max-w-5xl mx-auto border-t border-stone-200">
+          <div className="flex flex-col sm:flex-row sm:items-end justify-between mb-8 gap-4">
+            <div>
+              <span className="text-xs font-mono uppercase tracking-wider text-amber-800 font-medium">
+                The Assay Pipeline
+              </span>
+              <h2 className="text-2xl font-bold text-slate-900 mt-1">Upcoming audit utilities</h2>
+            </div>
+            <p className="text-xs text-slate-500 max-w-sm">
+              Single-purpose precision calculators for compliance officers, CPAs, and financial operators.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* Tool 02 */}
+            <div className="bg-white/80 p-6 rounded-2xl border border-stone-200/90 shadow-2xs">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-mono text-slate-400">TOOL 02</span>
+                <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200/60 font-semibold">
+                  In Development
+                </span>
+              </div>
+              <h3 className="text-base font-bold text-slate-900">StripeLedger</h3>
+              <p className="text-xs text-slate-600 mt-2 leading-relaxed">
+                Deterministic gross payout, transaction fee, and reserve hold reconciler for automated 1099-K reporting and bookkeeping matching.
+              </p>
+            </div>
+
+            {/* Tool 03 */}
+            <div className="bg-white/80 p-6 rounded-2xl border border-stone-200/90 shadow-2xs">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-mono text-slate-400">TOOL 03</span>
+                <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full bg-stone-100 text-slate-600 border border-stone-200 font-semibold">
+                  Planned
+                </span>
+              </div>
+              <h3 className="text-base font-bold text-slate-900">InvoiceAudit</h3>
+              <p className="text-xs text-slate-600 mt-2 leading-relaxed">
+                Cross-jurisdictional tax reverse-charge and multi-currency exchange rate auditor for international SaaS accounts payable.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        {/* 6. BOTTOM PRIVACY BANNER */}
+        <section id="privacy" className="px-6 sm:px-10 py-16 max-w-5xl mx-auto">
+          <div className="bg-slate-900 text-white rounded-3xl p-8 sm:p-12 shadow-xl flex flex-col sm:flex-row items-center justify-between gap-8">
+            <div className="space-y-3 max-w-xl">
+              <div className="inline-flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-stone-300">
+                <Lock className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Zero Server Upload Guarantee</span>
+              </div>
+              <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">
+                Ready to parse your Chase business statement?
+              </h2>
+              <p className="text-xs sm:text-sm text-stone-300 leading-relaxed">
+                Open StatementForge right now. No sign-up, no credit card, and no backend data transmission.
+              </p>
+            </div>
+
+            <Link
+              href="/tools/statementforge"
+              className="shrink-0 flex items-center gap-2 px-6 py-3.5 rounded-full text-xs font-bold bg-white text-slate-900 hover:bg-stone-100 transition-all shadow-md hover:shadow-lg"
+            >
+              <span>Open StatementForge</span>
+              <ArrowRight className="w-4 h-4" />
+            </Link>
+          </div>
+        </section>
+      </main>
+
+      {/* 7. MINIMAL ASSAY FOOTER */}
+      <footer className="bg-white border-t border-stone-200 py-8 px-6 sm:px-10 text-xs text-slate-500">
+        <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <span className="font-semibold text-slate-900 tracking-tight">assay</span>
+            <span className="text-stone-300">•</span>
+            <span>Small, exact tools for work that gets audited.</span>
+          </div>
+
+          <div className="flex items-center gap-6">
+            <Link href="/tools/statementforge" className="hover:text-slate-900 transition-colors">
+              StatementForge
+            </Link>
+            <span className="text-stone-300">•</span>
+            <span className="font-mono text-[11px] text-slate-400">100% Client-Side Memory</span>
+          </div>
         </div>
       </footer>
-
-      {/* PASTE STATEMENT MODAL (Smooth, Borderless Dialog with Large Radius) */}
-      {pasteModalOpen && (
-        <div className="fixed inset-0 bg-gray-900/30 backdrop-blur-xs z-50 flex items-center justify-center p-4 transition-all">
-          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 flex flex-col gap-4 shadow-[0_20px_60px_rgb(0,0,0,0.12)]">
-            <div className="flex items-center justify-between pb-2 border-b border-gray-100">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center">
-                  <FileText className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="font-semibold text-sm text-gray-900">
-                    Paste Chase Statement Text
-                  </h3>
-                  <p className="text-xs text-gray-400">
-                    Deterministic client-side parsing. Zero server transmission.
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setPasteModalOpen(false)}
-                className="text-gray-400 hover:text-gray-600 p-1.5 rounded-full hover:bg-gray-100 transition-colors"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <textarea
-              rows={12}
-              value={rawPasteText}
-              onChange={(e) => setRawPasteText(e.target.value)}
-              placeholder="Paste raw Chase statement text here..."
-              className="w-full bg-gray-50/80 rounded-2xl p-4 font-mono text-xs text-gray-800 placeholder-gray-400 focus:bg-white outline-none ring-2 ring-transparent focus:ring-blue-500/20 transition-all"
-            />
-
-            <div className="flex items-center justify-between pt-1">
-              <button
-                onClick={() => setRawPasteText(SAMPLE_CHASE_STATEMENT)}
-                className="text-xs font-medium text-blue-600 hover:text-blue-700 underline"
-              >
-                Insert sample fixture text
-              </button>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setPasteModalOpen(false)}
-                  className="px-4 py-2 text-xs font-medium rounded-full text-gray-600 hover:bg-gray-100 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => {
-                    if (rawPasteText.trim()) {
-                      loadStatementText(rawPasteText, 'pasted_chase_statement.txt');
-                      setPasteModalOpen(false);
-                      setRawPasteText('');
-                    }
-                  }}
-                  className="px-4 py-2 text-xs font-semibold rounded-full bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition-colors"
-                >
-                  Parse & Convert
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* NOTIFICATION TOAST */}
-      {toastMessage && (
-        <div className="fixed bottom-24 right-6 z-40 bg-gray-900 text-white px-4 py-2.5 rounded-2xl shadow-xl text-xs font-medium flex items-center gap-2.5 animate-fade-in">
-          <div className="w-2 h-2 rounded-full bg-emerald-400"></div>
-          <span>{toastMessage}</span>
-        </div>
-      )}
     </div>
   );
 }

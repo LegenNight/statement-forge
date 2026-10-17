@@ -8,7 +8,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 def run_comprehensive_e2e_tests():
     print("=" * 75)
-    print("  STATEMENTFORGE: COMPREHENSIVE CLIENT-SIDE E2E VERIFICATION SUITE")
+    print("  ASSAY & STATEMENTFORGE: FULL E2E SUITE WITH ROUTING & BRAND VERIFICATION")
     print("=" * 75)
     
     with sync_playwright() as p:
@@ -20,43 +20,74 @@ def run_comprehensive_e2e_tests():
         page = context.new_page()
 
         # -------------------------------------------------------------
-        # 1. APPLICATION BOOTSTRAP & INITIAL LOAD
+        # 1. ASSAY STOREFRONT (ROOT /) VERIFICATION
         # -------------------------------------------------------------
+        print("\n[*] 1. Validating Assay Root Storefront (http://localhost:3000)...")
         t_start = time.time()
         page.goto("http://localhost:3000", wait_until="networkidle")
         load_time_ms = (time.time() - t_start) * 1000
-        print(f"[✓] Application loaded in {load_time_ms:.1f}ms")
+        print(f"  [✓] Storefront loaded in {load_time_ms:.1f}ms")
 
-        # -------------------------------------------------------------
-        # 2. UI INTEGRITY CHECK
-        # -------------------------------------------------------------
-        print("\n[*] 1. Running UI Integrity Checks...")
-        
-        # Verify Light Mode Canvas
+        # Verify Brand Typography & Canvas Palette
         body_class = page.locator("body").get_attribute("class") or ""
-        assert "bg-gray-50" in body_class or "selection:bg-blue-100" in body_class, "Expected light mode canvas styling"
-        print("  [✓] Canvas verified: Light mode soft off-white background (bg-gray-50).")
+        assert "bg-stone-50" in body_class or "selection:bg-amber-100" in body_class, "Expected Assay stone-50 palette"
+        print("  [✓] Storefront canvas verified: Light mode stone-50 background (bg-stone-50).")
 
-        # Verify Sleek Brand Logo
-        logo_text = page.locator("header").inner_text()
-        assert "StatementForge" in logo_text, "Missing sleek StatementForge logo"
-        print("  [✓] Logo verified: Modern sans-serif 'StatementForge'.")
+        header_text = page.locator("header").inner_text()
+        assert "assay" in header_text, "Missing Assay brand mark in storefront header"
+        print("  [✓] Storefront brand verified: 'assay' in header.")
+
+        # Exact Required Copy Assertion
+        h1_text = page.locator("h1").inner_text()
+        assert "Small, exact tools for work that gets audited." in h1_text, (
+            f"Required headline missing! Got: {h1_text}"
+        )
+        print("  [✓] Required headline verified: 'Small, exact tools for work that gets audited.'")
+
+        # Verify StatementForge showcase & CTA
+        assert page.locator("text=StatementForge").count() > 0, "Missing StatementForge in storefront showcase"
+        cta_buttons = page.locator('a[href="/tools/statementforge"]').all()
+        assert len(cta_buttons) >= 2, f"Expected multiple 'Open StatementForge' links, found {len(cta_buttons)}"
+        print(f"  [✓] Storefront product routing verified: {len(cta_buttons)} links pointing to /tools/statementforge.")
+
+        # -------------------------------------------------------------
+        # 2. NAVIGATION TO STATEMENTFORGE TOOL ROUTE (/tools/statementforge)
+        # -------------------------------------------------------------
+        print("\n[*] 2. Navigating to StatementForge Dedicated Route (/tools/statementforge)...")
+        cta_buttons[0].click()
+        page.wait_for_url("**/tools/statementforge")
+        page.wait_for_selector("text=Local Processing Active")
+        print(f"  [✓] Successfully routed to: {page.url}")
+
+        # -------------------------------------------------------------
+        # 3. STATEMENTFORGE BRANDING & UI INTEGRITY CHECK
+        # -------------------------------------------------------------
+        print("\n[*] 3. Running StatementForge UI & Brand Integrity Checks...")
+
+        # Verify Header Branding: assay / StatementForge
+        header_el = page.locator("header").first
+        header_text = header_el.inner_text()
+        assert "assay" in header_text, "Missing 'assay' in StatementForge header"
+        assert "StatementForge" in header_text, "Missing 'StatementForge' in header"
+        print("  [✓] Brand identity verified: 'assay / StatementForge' header.")
 
         # Verify ShieldCheck Status Indicator ("Local Processing Active")
         shield_icon = page.locator("header svg.lucide-shield-check")
         assert shield_icon.count() > 0, "Missing ShieldCheck icon in header"
-        assert "Local Processing Active" in logo_text, "Missing 'Local Processing Active' status text"
+        assert "Local Processing Active" in header_text, "Missing 'Local Processing Active' status text"
         print("  [✓] Security telemetry verified: ShieldCheck icon + 'Local Processing Active'.")
 
-        # Verify Smooth Borderless Geometry (rounded-2xl containers)
-        rounded_containers = page.locator("div.rounded-2xl").all()
-        assert len(rounded_containers) >= 5, f"Expected rounded-2xl containers, found {len(rounded_containers)}"
-        print(f"  [✓] Borderless geometry verified: {len(rounded_containers)} floating rounded-2xl containers.")
+        # Verify Primary Action Button uses Assay Slate-900 palette (not old blue-600)
+        export_btn = page.locator('button:has-text("QuickBooks Online CSV")').first
+        btn_class = export_btn.get_attribute("class") or ""
+        assert "bg-slate-900" in btn_class, f"Expected bg-slate-900 on primary button, got: {btn_class}"
+        assert "bg-blue-600" not in btn_class, "Found deprecated blue-600 on primary button!"
+        print("  [✓] Palette sync verified: Primary export button styled with 'bg-slate-900'.")
 
         # -------------------------------------------------------------
-        # 3. MATH ENGINE & MULTI-PAGE FIXTURE VALIDATION
+        # 4. MATH ENGINE & MULTI-PAGE FIXTURE VALIDATION
         # -------------------------------------------------------------
-        print("\n[*] 2. Validating Math Engine & Multi-Page Parsing...")
+        print("\n[*] 4. Validating Multi-Page Math Engine & Reconciliation...")
 
         # Measure in-browser parse performance
         t0 = time.time()
@@ -84,7 +115,7 @@ def run_comprehensive_e2e_tests():
         assert len(rows) == 13, f"Expected 13 rows from multi-page fixture, got {len(rows)}"
         print(f"  [✓] Multi-page stitching verified: Exactly {len(rows)} ledger transactions extracted.")
 
-        # Verify Redundant Bank Headers were sanitized and not injected as rows
+        # Verify Redundant Bank Headers were sanitized
         for row in rows:
             text = row.inner_text()
             assert "JPMorgan" not in text, "Redundant bank header was erroneously parsed as a transaction row!"
@@ -93,11 +124,10 @@ def run_comprehensive_e2e_tests():
         print("  [✓] Header sanitization verified: Zero ghost rows from redundant page headers.")
 
         # -------------------------------------------------------------
-        # 4. INTERACTIVE STATE HANDLING & LIVE DISCREPANCY CALCULATION
+        # 5. INTERACTIVE STATE HANDLING & LIVE RECALCULATION
         # -------------------------------------------------------------
-        print("\n[*] 3. Testing Interactive State Handling & Live Recalculation...")
+        print("\n[*] 5. Testing Interactive State Handling & Live Recalculation...")
 
-        # Edit first row amount: change $4,250.00 to $4,130.00 (-$120.00 difference)
         first_amount_cell = page.locator("tbody tr:first-child td:nth-child(6)")
         first_amount_cell.click()
         
@@ -120,9 +150,9 @@ def run_comprehensive_e2e_tests():
         print("  [✓] State recovery verified: Re-balanced to $0.00 variance.")
 
         # -------------------------------------------------------------
-        # 5. KEYBOARD SHORTCUTS & SEARCH FILTERING
+        # 6. KEYBOARD SHORTCUTS & SEARCH FILTERING
         # -------------------------------------------------------------
-        print("\n[*] 4. Testing Shortcuts & Filtering...")
+        print("\n[*] 6. Testing Shortcuts & Filtering...")
         page.keyboard.press("/")
         search_input = page.locator('input[placeholder*="Search payees"]')
         search_input.type("Office Depot")
@@ -139,9 +169,9 @@ def run_comprehensive_e2e_tests():
         assert len(page.locator("tbody tr").all()) == 13
 
         # -------------------------------------------------------------
-        # 6. EXPORT ENGINE VALIDATION (IN-MEMORY CLIENT-SIDE DOWNLOADS)
+        # 7. EXPORT ENGINE VALIDATION (CLIENT-SIDE MEMORY DOWNLOADS)
         # -------------------------------------------------------------
-        print("\n[*] 5. Testing Export Engine (QuickBooks, Xero, TSV)...")
+        print("\n[*] 7. Testing Export Engine (QuickBooks, Xero, TSV)...")
 
         # A. QuickBooks Online CSV Download
         with page.expect_download() as download_info:
@@ -183,7 +213,7 @@ def run_comprehensive_e2e_tests():
         browser.close()
 
     print("\n" + "=" * 75)
-    print("  ALL E2E & CLIENT-SIDE INTEGRITY TESTS PASSED SUCCESSFULLY! (100%)")
+    print("  ALL ASSAY & STATEMENTFORGE SUITE TESTS PASSED SUCCESSFULLY! (100%)")
     print("=" * 75)
 
 
