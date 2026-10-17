@@ -37,15 +37,14 @@ export async function extractTextFromPdf(file: File): Promise<string> {
 
     const pdf = await loadingTask.promise;
     const numPages = pdf.numPages;
-    const textLines: string[] = [];
+    const pageTexts: string[] = [];
 
     for (let pageNum = 1; pageNum <= numPages; pageNum++) {
       const page = await pdf.getPage(pageNum);
       const content = await page.getTextContent();
       const items = content.items as Array<{ str?: string; transform?: number[] }>;
 
-      // Sort or group text items by vertical position Y descending, then X ascending
-      // transform: [a, b, c, d, x, y]
+      const pageLines: string[] = [];
       let lastY: number | null = null;
       let lineAccumulator = '';
 
@@ -54,7 +53,9 @@ export async function extractTextFromPdf(file: File): Promise<string> {
         const y = item.transform ? Math.round(item.transform[5]) : null;
 
         if (lastY !== null && y !== null && Math.abs(y - lastY) > 4) {
-          textLines.push(lineAccumulator.trim());
+          if (lineAccumulator.trim()) {
+            pageLines.push(lineAccumulator.trim());
+          }
           lineAccumulator = item.str;
         } else {
           if (lineAccumulator.length > 0 && !lineAccumulator.endsWith(' ')) {
@@ -69,11 +70,15 @@ export async function extractTextFromPdf(file: File): Promise<string> {
       }
 
       if (lineAccumulator.trim()) {
-        textLines.push(lineAccumulator.trim());
+        pageLines.push(lineAccumulator.trim());
+      }
+
+      if (pageLines.length > 0) {
+        pageTexts.push(pageLines.join('\n'));
       }
     }
 
-    const fullExtracted = textLines.join('\n');
+    const fullExtracted = pageTexts.join('\n\n---PAGE_BREAK---\n\n');
     if (fullExtracted.trim().length > 20) {
       return fullExtracted;
     }

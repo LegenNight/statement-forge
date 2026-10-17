@@ -177,6 +177,26 @@ export function formatCurrency(amount: number, showSign: boolean = false): strin
 }
 
 /**
+ * Detect redundant headers, footers, address blocks, and page breaks that repeat on pages 2+
+ */
+export function isRedundantHeaderOrFooter(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return true;
+  if (/^---PAGE_BREAK---$/i.test(trimmed)) return true;
+  if (/^Page\s+\d+(\s+of\s+\d+)?$/i.test(trimmed)) return true;
+  if (/JPMorgan Chase Bank/i.test(trimmed)) return true;
+  if (/^P\s*O\s*Box\s*\d+/i.test(trimmed)) return true;
+  if (/^Columbus\s+OH\s+[\d\-]+/i.test(trimmed)) return true;
+  if (/^CHASE BUSINESS (COMPLETE )?CHECKING$/i.test(trimmed)) return true;
+  if (/Account Number:\s*(\d{9,12}|\.{3,}\d{4}|[0-9]{4,16})/i.test(trimmed)) return true;
+  if (/([A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{2}\/\d{2}\/\d{2,4})\s+(?:through|to|-)\s+([A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{2}\/\d{2}\/\d{2,4})/i.test(trimmed)) return true;
+  if (/^(DATE\s+DESCRIPTION|CHECK NO\.\s+DATE PAID|DATE\s+AMOUNT)/i.test(trimmed)) return true;
+  if (/^DATE\b.*AMOUNT\b/i.test(trimmed)) return true;
+  if (/^CHECK NO\b/i.test(trimmed)) return true;
+  return false;
+}
+
+/**
  * Core Chase Business Statement Parser
  */
 export function parseChaseStatement(rawText: string): ChaseParseResult {
@@ -249,7 +269,19 @@ export function parseChaseStatement(rawText: string): ChaseParseResult {
 
     if (!line) continue;
 
-    // Detect Section Headers
+    // 1. Detect Repeated Section Continuation Headers (Pages 2+)
+    if (/^DEPOSITS AND ADDITIONS\s*\((?:continued|cont\'d)\)/i.test(line)) {
+      currentSection = 'DEPOSITS';
+      continue; // Keep currentTx active for cross-page stitching
+    } else if (/^CHECKS PAID\s*\((?:continued|cont\'d)\)/i.test(line)) {
+      currentSection = 'CHECKS';
+      continue; // Keep currentTx active for cross-page stitching
+    } else if (/^ELECTRONIC WITHDRAWALS\s*\((?:continued|cont\'d)\)/i.test(line)) {
+      currentSection = 'WITHDRAWALS';
+      continue; // Keep currentTx active for cross-page stitching
+    }
+
+    // 2. Detect New Section Headers
     if (/^DEPOSITS AND ADDITIONS/i.test(line)) {
       currentSection = 'DEPOSITS';
       currentTx = null;
@@ -270,12 +302,8 @@ export function parseChaseStatement(rawText: string): ChaseParseResult {
 
     if (currentSection === 'NONE') continue;
 
-    // Skip column headers
-    if (
-      /^(DATE\s+DESCRIPTION|CHECK NO\.\s+DATE PAID|DATE\s+AMOUNT)/i.test(line) ||
-      /^DATE\b.*AMOUNT\b/i.test(line) ||
-      /^CHECK NO\b/i.test(line)
-    ) {
+    // 3. Skip redundant page headers, footers, address blocks, and page breaks
+    if (isRedundantHeaderOrFooter(line)) {
       continue;
     }
 
@@ -285,6 +313,7 @@ export function parseChaseStatement(rawText: string): ChaseParseResult {
     if (currentSection === 'CHECKS') {
       const checkRow1 = line.match(/^(\d+)\s+(\d{2}\/\d{2})\s+(.+?)\s+[\$]?([\d,]+\.\d{2})$/);
       const checkRow2 = line.match(/^(\d{2}\/\d{2})\s+(?:CHECK\s*#?\s*(\d+)\s+)?(.+?)\s+[\$]?([\d,]+\.\d{2})$/);
+      const checkRowNoAmt = line.match(/^(\d+)\s+(\d{2}\/\d{2})\s+(.+)$/);
 
       if (checkRow1) {
         const checkNum = checkRow1[1];
@@ -330,6 +359,27 @@ export function parseChaseStatement(rawText: string): ChaseParseResult {
         transactions.push(newTx);
         currentTx = newTx;
         continue;
+      } else if (checkRowNoAmt) {
+        const checkNum = checkRowNoAmt[1];
+        const dateStr = checkRowNoAmt[2];
+        const memo = checkRowNoAmt[3].trim();
+
+        const newTx: ParsedTransaction = {
+          id: `tx-chk-${transactions.length + 1}-${Date.now()}`,
+          date: dateStr,
+          rawDate: dateStr,
+          type: 'CHECK',
+          checkNumber: checkNum,
+          cleanPayee: `Check #${checkNum}`,
+          originalMemo: memo || `CHECK #${checkNum}`,
+          amount: 0,
+          rawAmount: 0,
+          section: 'CHECKS PAID',
+          lineNumber: i + 1,
+        };
+        transactions.push(newTx);
+        currentTx = newTx;
+        continue;
       }
     }
 
@@ -337,6 +387,7 @@ export function parseChaseStatement(rawText: string): ChaseParseResult {
     // Format: "10/02   STRIPE PAYMENTS TRANSFER ST-992140A             $4,250.00"
     // Match date pattern: /^(\d{2}\/\d{2})/
     const standardRow = line.match(/^(\d{2}\/\d{2})\s+(.+?)\s+[\$]?([\d,]+\.\d{2})$/);
+    const standardRowNoAmt = line.match(/^(\d{2}\/\d{2})\s+(.+)$/);
 
     if (standardRow) {
       const dateStr = standardRow[1];
@@ -359,19 +410,50 @@ export function parseChaseStatement(rawText: string): ChaseParseResult {
       transactions.push(newTx);
       currentTx = newTx;
       continue;
+    } else if (standardRowNoAmt && !isRedundantHeaderOrFooter(line)) {
+      const dateStr = standardRowNoAmt[1];
+      const memo = standardRowNoAmt[2].trim();
+      const txType: TransactionType = currentSection === 'DEPOSITS' ? 'CREDIT' : 'DEBIT';
+
+      const newTx: ParsedTransaction = {
+        id: `tx-${txType.toLowerCase()}-${transactions.length + 1}-${Date.now()}`,
+        date: dateStr,
+        rawDate: dateStr,
+        type: txType,
+        cleanPayee: cleanPayeeName(memo, txType),
+        originalMemo: memo,
+        amount: 0,
+        rawAmount: 0,
+        section: currentSection === 'DEPOSITS' ? 'DEPOSITS AND ADDITIONS' : 'ELECTRONIC WITHDRAWALS',
+        lineNumber: i + 1,
+      };
+      transactions.push(newTx);
+      currentTx = newTx;
+      continue;
     }
 
-    // C. Multi-line continuation handling:
+    // C. Multi-line continuation handling & Cross-Page Transaction Stitching:
     // "Join multi-line description lines that do not start with a date to the previous transaction memo."
     if (currentTx && !/^(\d{2}\/\d{2})/i.test(line) && !/^\d+\s+\d{2}\/\d{2}/i.test(line)) {
-      // Avoid merging if it looks like totals or page footer
-      if (!/^(Total|Page|Ending Balance|Beginning Balance)/i.test(line)) {
-        currentTx.originalMemo = `${currentTx.originalMemo} ${line}`.trim();
-        // Re-calculate clean payee with the extended memo if it wasn't a check
-        if (currentTx.type !== 'CHECK') {
-          currentTx.cleanPayee = cleanPayeeName(currentTx.originalMemo, currentTx.type);
+      // Check if continuation line supplies an amount for a split transaction
+      const continuationAmtMatch = line.match(/^(.*?)\s*[\$]?([\d,]+\.\d{2})$/);
+      if (currentTx.rawAmount === 0 && continuationAmtMatch) {
+        const memoPart = continuationAmtMatch[1].trim();
+        const amt = parseCurrency(continuationAmtMatch[2]);
+        currentTx.rawAmount = amt;
+        currentTx.amount = currentTx.type === 'CREDIT' ? amt : -amt;
+        if (memoPart) {
+          currentTx.originalMemo = `${currentTx.originalMemo} ${memoPart}`.trim();
         }
+      } else {
+        currentTx.originalMemo = `${currentTx.originalMemo} ${line}`.trim();
       }
+
+      // Re-calculate clean payee with the extended memo if it wasn't a check
+      if (currentTx.type !== 'CHECK') {
+        currentTx.cleanPayee = cleanPayeeName(currentTx.originalMemo, currentTx.type);
+      }
+      continue;
     }
   }
 
