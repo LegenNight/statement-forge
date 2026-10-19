@@ -187,7 +187,7 @@ export function isRedundantHeaderOrFooter(line: string): boolean {
   if (/^P\s*O\s*Box\s*\d+/i.test(trimmed)) return true;
   if (/^Columbus\s+OH\s+[\d\-]+/i.test(trimmed)) return true;
   if (/^CHASE BUSINESS (COMPLETE )?CHECKING$/i.test(trimmed)) return true;
-  if (/Account Number:\s*(\d{9,12}|\.{3,}\d{4}|[0-9]{4,16})/i.test(trimmed)) return true;
+  if (/Account Number:\s*([0-9]{4,18}|\.{3,}\d{4})/i.test(trimmed)) return true;
   if (/([A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{2}\/\d{2}\/\d{2,4})\s+(?:through|to|-)\s+([A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{2}\/\d{2}\/\d{2,4})/i.test(trimmed)) return true;
   if (/^(DATE\s+DESCRIPTION|CHECK NO\.\s+DATE PAID|DATE\s+AMOUNT)/i.test(trimmed)) return true;
   if (/^DATE\b.*AMOUNT\b/i.test(trimmed)) return true;
@@ -199,10 +199,111 @@ export function isRedundantHeaderOrFooter(line: string): boolean {
 }
 
 /**
+ * Defensive multi-line cell stitching:
+ * 1. If summary labels ('Beginning Balance', 'Deposits and Additions', etc.) appear on one line
+ *    and the dollar amount appears on the immediately following line, stitch them together.
+ * 2. If a transaction date ('^\d{2}/\d{2}$'), description, and amount appear on 2 or 3 consecutive
+ *    lines under TRANSACTION DETAIL, stitch them into a single row.
+ */
+export function stitchMultiLineCells(inputLines: string[]): string[] {
+  const result: string[] = [];
+  let inTransactionDetail = false;
+
+  const SUMMARY_LABEL_RE =
+    /^(Beginning Balance|Deposits and Additions|Checks Paid|ATM\s*&\s*Debit Card Withdrawals|Other Withdrawals|Electronic Withdrawals|Fees|Ending Balance):?$/i;
+  const AMOUNT_ONLY_RE = /^-?\$?\s*-?[0-9.,]*\d[0-9.,]*$/;
+
+  for (let i = 0; i < inputLines.length; i++) {
+    const line = inputLines[i];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      result.push(line);
+      continue;
+    }
+
+    if (/^TRANSACTION DETAILS?/i.test(trimmed)) {
+      inTransactionDetail = true;
+      result.push(line);
+      continue;
+    }
+
+    if (/^DAILY ENDING BALANCE/i.test(trimmed) || /^SERVICE CHARGE SUMMARY/i.test(trimmed)) {
+      inTransactionDetail = false;
+      result.push(line);
+      continue;
+    }
+
+    // 1. Summary Label Stitching:
+    // If current line is a summary label without amount, and next line is an amount
+    if (SUMMARY_LABEL_RE.test(trimmed) && i + 1 < inputLines.length) {
+      const nextTrimmed = inputLines[i + 1].trim();
+      if (AMOUNT_ONLY_RE.test(nextTrimmed)) {
+        result.push(`${trimmed} ${nextTrimmed}`);
+        i++; // skip next line
+        continue;
+      }
+    }
+
+    // 2. Transaction Rows Stitching:
+    // Date alone: ^\d{2}/\d{2}$
+    if (/^\d{2}\/\d{2}$/.test(trimmed)) {
+      if (i + 2 < inputLines.length) {
+        const next1 = inputLines[i + 1].trim();
+        const next2 = inputLines[i + 2].trim();
+        // 3-line case: Date / Description / Amount
+        if (
+          AMOUNT_ONLY_RE.test(next2) &&
+          !/^\d{2}\/\d{2}/.test(next1) &&
+          !/^DATE\b/i.test(next1) &&
+          !isRedundantHeaderOrFooter(next1)
+        ) {
+          result.push(`${trimmed} ${next1} ${next2}`);
+          i += 2;
+          continue;
+        }
+      }
+      if (i + 1 < inputLines.length) {
+        const next1 = inputLines[i + 1].trim();
+        // 2-line case: Date / Description + Amount
+        if (
+          /-?\$?[0-9.,]*\d[0-9.,]*$/.test(next1) &&
+          !/^\d{2}\/\d{2}/.test(next1) &&
+          !isRedundantHeaderOrFooter(next1)
+        ) {
+          result.push(`${trimmed} ${next1}`);
+          i++;
+          continue;
+        }
+      }
+    }
+
+    // 2-line case: Date + Description on line i, Amount alone on line i + 1
+    if (
+      /^\d{2}\/\d{2}\s+/.test(trimmed) &&
+      !/-?\$?[0-9.,]*\d[0-9.,]*$/.test(trimmed) &&
+      i + 1 < inputLines.length
+    ) {
+      const next1 = inputLines[i + 1].trim();
+      if (AMOUNT_ONLY_RE.test(next1)) {
+        result.push(`${trimmed} ${next1}`);
+        i++;
+        continue;
+      }
+    }
+
+    result.push(line);
+  }
+
+  return result;
+}
+
+/**
  * Core Chase Business Statement Parser
  */
 export function parseChaseStatement(rawText: string, sourceFileName: string = 'chase_statement.pdf'): StatementParseResult {
-  const lines = rawText.split(/\r?\n/);
+  const rawLines = rawText.split(/\r?\n/);
+  const lines = stitchMultiLineCells(rawLines);
 
   // 1. Metadata Extraction
   let accountNumber = '0000000000';
@@ -211,7 +312,7 @@ export function parseChaseStatement(rawText: string, sourceFileName: string = 'c
   let endDate = '';
   let statementType = 'Chase Business Complete Checking';
 
-  const acctMatch = rawText.match(/Account Number:\s*(\d{9,12}|\.{3,}\d{4}|[0-9]{4,16})/i);
+  const acctMatch = rawText.match(/Account Number:\s*([0-9]{4,18}|\.{3,}\d{4})/i);
   if (acctMatch) {
     accountNumber = acctMatch[1].trim();
   }

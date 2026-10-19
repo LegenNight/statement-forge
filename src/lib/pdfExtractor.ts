@@ -1,34 +1,94 @@
 /**
- * Client-Side PDF Text Extraction
- * Runs 100% inside the browser memory. Zero server uploads.
+ * Client-Side & Node-Compatible PDF Text Extraction
+ * Extracts text from PDF files using PDF.js with 2D coordinate row reconstruction.
+ * Runs 100% in browser memory (zero server uploads) and in test/Node environments.
  */
 
-export async function extractTextFromFile(file: File): Promise<string> {
-  const fileName = file.name.toLowerCase();
-
-  if (fileName.endsWith('.txt') || file.type === 'text/plain') {
-    return await file.text();
-  }
-
-  if (fileName.endsWith('.pdf') || file.type === 'application/pdf') {
-    return await extractTextFromPdf(file);
-  }
-
-  // Fallback to text reading
-  return await file.text();
+export interface TextItemCoord {
+  str: string;
+  x: number;
 }
 
-export async function extractTextFromPdf(file: File): Promise<string> {
-  const arrayBuffer = await file.arrayBuffer();
+export interface RowBucket {
+  y: number;
+  items: TextItemCoord[];
+}
+
+/**
+ * Loads the appropriate PDF.js build based on the current execution runtime.
+ */
+async function getPdfJsLib(): Promise<any> {
+  if (typeof window === 'undefined') {
+    // Node.js environment (e.g. tsx, test scripts, SSR)
+    try {
+      return await import('pdfjs-dist/legacy/build/pdf.mjs');
+    } catch {
+      return await import('pdfjs-dist');
+    }
+  }
+
+  // Browser environment (client-side Next.js)
+  const pdfjsLib = await import('pdfjs-dist');
+
+  if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+    try {
+      // Use locally served worker from public/ directory
+      pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+    } catch {
+      const version = pdfjsLib.version || '6.4.299';
+      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${version}/build/pdf.worker.min.mjs`;
+    }
+  }
+
+  return pdfjsLib;
+}
+
+export async function extractTextFromFile(
+  file: File | Blob | { name: string; arrayBuffer: () => Promise<ArrayBuffer>; text?: () => Promise<string> }
+): Promise<string> {
+  const fileName = (file && 'name' in file && typeof file.name === 'string' ? file.name : '').toLowerCase();
+
+  if (fileName.endsWith('.txt')) {
+    if (typeof (file as any).text === 'function') {
+      return await (file as any).text();
+    }
+    const buf = await file.arrayBuffer();
+    return new TextDecoder().decode(buf);
+  }
+
+  return await extractTextFromPdf(file);
+}
+
+export async function extractTextFromPdf(
+  bufferOrFile:
+    | File
+    | Blob
+    | ArrayBuffer
+    | Uint8Array
+    | { arrayBuffer: () => Promise<ArrayBuffer> }
+): Promise<string> {
+  let arrayBuffer: ArrayBuffer;
+
+  if (bufferOrFile instanceof ArrayBuffer) {
+    arrayBuffer = bufferOrFile;
+  } else if (bufferOrFile instanceof Uint8Array) {
+    arrayBuffer = bufferOrFile.buffer.slice(
+      bufferOrFile.byteOffset,
+      bufferOrFile.byteOffset + bufferOrFile.byteLength
+    ) as ArrayBuffer;
+  } else if (
+    bufferOrFile &&
+    typeof bufferOrFile === 'object' &&
+    'arrayBuffer' in bufferOrFile &&
+    typeof bufferOrFile.arrayBuffer === 'function'
+  ) {
+    arrayBuffer = await bufferOrFile.arrayBuffer();
+  } else {
+    throw new Error('Unsupported buffer or file type provided to extractTextFromPdf');
+  }
 
   try {
-    const pdfjsLib = await import('pdfjs-dist');
-
-    // Use cloudflare CDN worker matching pdfjs version or fallback
-    if (typeof window !== 'undefined' && !pdfjsLib.GlobalWorkerOptions.workerSrc) {
-      const version = pdfjsLib.version || '3.11.174';
-      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${version}/pdf.worker.min.js`;
-    }
+    const pdfjsLib = await getPdfJsLib();
 
     const loadingTask = pdfjsLib.getDocument({
       data: new Uint8Array(arrayBuffer),
@@ -44,34 +104,39 @@ export async function extractTextFromPdf(file: File): Promise<string> {
       const content = await page.getTextContent();
       const items = content.items as Array<{ str?: string; transform?: number[] }>;
 
-      const pageLines: string[] = [];
-      let lastY: number | null = null;
-      let lineAccumulator = '';
+      const rows: RowBucket[] = [];
 
       for (const item of items) {
-        if (!item.str) continue;
-        const y = item.transform ? Math.round(item.transform[5]) : null;
+        if (!item || typeof item.str !== 'string') continue;
+        const text = item.str;
+        if (!text && text !== ' ') continue;
 
-        if (lastY !== null && y !== null && Math.abs(y - lastY) > 4) {
-          if (lineAccumulator.trim()) {
-            pageLines.push(lineAccumulator.trim());
-          }
-          lineAccumulator = item.str;
-        } else {
-          if (lineAccumulator.length > 0 && !lineAccumulator.endsWith(' ')) {
-            lineAccumulator += ' ' + item.str;
-          } else {
-            lineAccumulator += item.str;
-          }
+        const x = item.transform && item.transform.length >= 6 ? item.transform[4] : 0;
+        const y = item.transform && item.transform.length >= 6 ? item.transform[5] : 0;
+
+        // Group TextItems that share the same horizontal row using a vertical Y-coordinate tolerance (<= 3pt)
+        let matchedRow = rows.find((r) => Math.abs(r.y - y) <= 3);
+        if (!matchedRow) {
+          matchedRow = { y, items: [] };
+          rows.push(matchedRow);
         }
-        if (y !== null) {
-          lastY = y;
-        }
+        matchedRow.items.push({ str: text, x });
       }
 
-      if (lineAccumulator.trim()) {
-        pageLines.push(lineAccumulator.trim());
-      }
+      // Sort rows top-to-bottom (Y descending)
+      rows.sort((a, b) => b.y - a.y);
+
+      // Sort items within each row left-to-right (X ascending) and join them with spaces
+      const pageLines = rows
+        .map((r) => {
+          r.items.sort((a, b) => a.x - b.x);
+          return r.items
+            .map((i) => i.str)
+            .join(' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+        })
+        .filter((line) => line.length > 0);
 
       if (pageLines.length > 0) {
         pageTexts.push(pageLines.join('\n'));
@@ -83,10 +148,10 @@ export async function extractTextFromPdf(file: File): Promise<string> {
       return fullExtracted;
     }
   } catch (err) {
-    console.warn('pdfjs-dist extraction notice:', err);
+    console.warn('pdfjs-dist extraction error, falling back:', err);
   }
 
-  // Fallback raw text stream decoder for uncompressed/embedded PDF text
+  // Fallback binary text scanner for uncompressed/embedded PDF text
   return extractRawPdfTextFallback(arrayBuffer);
 }
 
@@ -96,7 +161,6 @@ export async function extractTextFromPdf(file: File): Promise<string> {
 function extractRawPdfTextFallback(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let rawStr = '';
-  // Convert first 500KB to string to find stream text chunks
   const len = Math.min(bytes.length, 1024 * 512);
   for (let i = 0; i < len; i++) {
     rawStr += String.fromCharCode(bytes[i]);
