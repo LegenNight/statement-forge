@@ -1645,17 +1645,17 @@ export default function StatementForgeApp() {
                         {/* Type Badge */}
                         <td className="w-28 px-4 py-3">
                           {isCredit && (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-50 text-emerald-800 border border-emerald-200">
+                            <span className="inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-50 text-emerald-800 border border-emerald-200">
                               + Credit
                             </span>
                           )}
                           {!isCredit && !isCheck && (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                            <span className="inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
                               - Debit
                             </span>
                           )}
                           {isCheck && (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-purple-50 text-purple-800 border border-purple-200">
+                            <span className="inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded-full text-[11px] font-medium bg-purple-50 text-purple-800 border border-purple-200">
                               Check {tx.checkNumber ? (isRedacted ? '#••••' : `#${tx.checkNumber}`) : ''}
                             </span>
                           )}
