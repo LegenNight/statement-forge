@@ -85,12 +85,14 @@ export const BANK_REGISTRY: Record<string, BankParser> = {
  */
 export function detectBank(rawText: string): SupportedBankId {
   if (!rawText || rawText.trim().length === 0) {
+    console.log('[detectBank] Detected bankId: UNKNOWN (empty text)');
     return 'UNKNOWN';
   }
   const sample = rawText.slice(0, 3000);
 
   // 1. Chase patterns: check for /(JPMorgan Chase|Chase Business)/i anywhere in the first few lines of the text
   if (/(JPMorgan Chase|Chase Business)/i.test(sample)) {
+    console.log('[detectBank] Detected bankId: CHASE');
     return 'CHASE';
   }
 
@@ -103,19 +105,23 @@ export function detectBank(rawText: string): SupportedBankId {
     sample.includes('business platinum') ||
     sample.includes('business gold')
   ) {
+    console.log('[detectBank] Detected bankId: AMEX');
     return 'AMEX';
   }
 
   // 3. Bank of America patterns
   if (sample.includes('bank of america') || sample.includes('bofa')) {
+    console.log('[detectBank] Detected bankId: BOFA');
     return 'BOFA';
   }
 
   // 4. Wells Fargo patterns
   if (sample.includes('wells fargo')) {
+    console.log('[detectBank] Detected bankId: WELLS_FARGO');
     return 'WELLS_FARGO';
   }
 
+  console.log('[detectBank] Detected bankId: UNKNOWN');
   return 'UNKNOWN';
 }
 

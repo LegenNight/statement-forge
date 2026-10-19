@@ -1,0 +1,76 @@
+JPMorgan Chase Bank, N.A. Chase Business Complete Checking
+Account Number: 000000412345678
+
+Lumen & Pine Studio LLC
+2417 SE Alder St Ste 3
+Portland OR 97214-3310
+
+CHECKING SUMMARY
+Beginning Balance $22,418.36
+Deposits and Additions 18,821.27
+Checks Paid -3,985.00
+ATM & Debit Card Withdrawals -2,305.48
+Electronic Withdrawals -10,681.13
+Fees -15.00
+Ending Balance $24,253.02
+
+Deposits and credits are shown as positive amounts. Checks, card purchases, electronic withdrawals and fees are shown as negative amounts.
+
+TRANSACTION DETAIL
+DATE DESCRIPTION AMOUNT
+09/01 ACH Debit Gusto Payroll Net 8842KD 092026 PPD ID: 1453112888 -3,962.18
+09/02 ACH Credit Stripe Transfer ST-8H2K91 Lumen & Pine Studio LLC 3,840.00
+09/03 Card Purchase 09/02 Adobe *Creative Cloud 408-536-6000 CA Card 7731 -89.99
+09/03 Card Purchase 09/02 Google *Workspace 650-253-0000 CA Card 7731 -144.00
+09/04 Deposit - Mobile Check 5528 Brightline Dental 2,250.00
+09/05 Check # 1041 -1,850.00
+09/06 Card Purchase 09/04 Figma Professional San Francisco CA Card 7731 -75.00
+09/07 ACH Debit QuickBooks Online Subscr 0092881 CCD ID: 1942888888 -85.00
+09/08 Wire Transfer In Ref 20260908-00417 Brightline Dental Group Inv 2291 Orig: Harbor Trust 4,600.00
+09/09 Card Purchase 09/08 Staples 00418 Portland OR Card 7731 -212.37
+09/10 ACH Debit Electric Utility Bill Pay Acct 88-2210-4 WEB ID: 9930011 -184.52
+09/11 Card Purchase 09/10 Amzn Mktp US*2K4H91 Seattle WA Card 7731 -163.88
+09/12 Check # 1042 -640.00
+09/13 Online Transfer To Savings XXXXXX4471 Ref TRF0913-22 -2,000.00
+09/15 ACH Credit Stripe Transfer ST-8M4P20 Lumen & Pine Studio LLC 2,915.50
+09/16 Card Purchase 09/14 Delta Air 0067213448812 Atlanta GA Card 7731 -428.10
+09/17 Zelle Payment From Dana Whitfield Conf# 4RT81KQ2 Re: Logo Refresh 780.00
+09/18 Card Purchase 09/17 Uber *Trip Help.Uber.com CA Card 7731 -36.75
+09/19 Check # 1044 -295.00
+09/20 ACH Debit Business Insurance Premium Policy BP-77219 CCD ID: 3771204455 -312.00
+09/21 Card Purchase 09/19 DoorDash*Order 855-973-1040 CA Card 7731 -58.40
+09/22 ACH Credit PayPal Transfer 1049281773 PPD ID: PAYPALSD11 1,326.40
+09/23 Card Purchase 09/22 Coworking Space Membership Portland OR Card 7731 -450.00
+09/24 Card Purchase 09/23 Facebk *Ads 9FQ2K 650-543-4800 CA Card 7731 -600.00
+09/25 ACH Debit Telecom Services Autopay 5550192 WEB ID: 2208801122 -119.99
+09/26 Check # 1045 -1,200.00
+09/27 Card Purchase 09/26 Zoom.us 888-799-9666 CA Card 7731 -16.99
+September 01, 2026 through September 30, 2026 Page 1 of 2
+Sample statement with fictional data, created for software demos only.
+
+---PAGE_BREAK---
+
+JPMorgan Chase Bank, N.A. Chase Business Complete Checking
+Account Number: 000000412345678
+
+DATE DESCRIPTION AMOUNT
+09/28 Card Purchase 09/26 Notion Labs Inc San Francisco CA Card 7731 -30.00
+09/29 ACH Credit Stripe Transfer ST-8Q7T66 Lumen & Pine Studio LLC 3,105.25
+09/30 Interest Payment 4.12
+09/30 ACH Debit Gusto Payroll Net 8851QM 093026 PPD ID: 1453112888 -4,017.44
+09/30 Monthly Service Fee -15.00
+
+DAILY ENDING BALANCE
+DATE BALANCE DATE BALANCE DATE BALANCE
+09/01 18,456.18 09/02 22,296.18 09/03 22,062.19
+09/04 24,312.19 09/05 22,462.19 09/06 22,387.19
+09/07 22,302.19 09/08 26,902.19 09/09 26,689.82
+09/10 26,505.30 09/11 26,341.42 09/12 25,701.42
+09/13 23,701.42 09/15 26,616.92 09/16 26,188.82
+09/17 26,968.82 09/18 26,932.07 09/19 26,637.07
+09/20 26,325.07 09/21 26,266.67 09/22 27,593.07
+09/23 27,143.07 09/24 26,543.07 09/25 26,423.08
+09/26 25,223.08 09/27 25,206.09 09/28 25,176.09
+09/29 28,281.34 09/30 24,253.02
+September 01, 2026 through September 30, 2026 Page 2 of 2
+Sample statement with fictional data, created for software demos only.

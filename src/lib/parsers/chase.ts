@@ -32,21 +32,37 @@ export function cleanPayeeName(originalMemo: string, type: TransactionType, chec
   text = text.replace(/^AMZN\s+MKTPLACE(\s+PMTS)?(\s*\*[\w\-]+|\s+)?/i, 'Amazon Marketplace ');
   text = text.replace(/^AMAZON\.COM(\s*\*[\w\-]+|\s+)?/i, 'Amazon ');
   text = text.replace(/^ACH\s+(DEBIT|CREDIT)(\s*-\s*|\s+)?/i, '');
+  text = text.replace(/^CARD\s+PURCHASE(\s+\d{2}\/\d{2})?\s*/i, '');
+  text = text.replace(/^ZELLE\s+PAYMENT\s+FROM\s+/i, '');
+  text = text.replace(/^DEPOSIT\s*-\s*MOBILE\s+CHECK\s+\d+\s*/i, '');
   text = text.replace(/^PAYPAL\s+(INST\s+XFER|DES:.*|TRANSFER)?\s*/i, 'PayPal ');
   text = text.replace(/^WIRE\s+TRANSFER\s+(INCOMING|OUTGOING)?\s*/i, '');
   text = text.replace(/^CLIENT\s+RETAINER\s+(DIRECT\s+DEPOSIT)?\s*/i, '');
   text = text.replace(/^DIRECT\s+DEPOSIT\s*/i, '');
   text = text.replace(/^DEBIT\s+CARD\s+PURCHASE(\s*-\s*|\s+)?/i, '');
 
-  if (/Amazon Marketplace/i.test(text)) {
-    return 'Amazon Marketplace';
+  if (/Amazon Marketplace/i.test(text) || /AMZN\s+MKTP/i.test(text)) {
+    return 'Amazon';
   }
 
   // Specific merchant patterns
-  if (/STRIPE\s+PAYMENTS/i.test(text)) return 'Stripe';
+  if (/STRIPE/i.test(text)) return 'Stripe';
+  if (/ADOBE/i.test(text)) return 'Adobe';
+  if (/FIGMA/i.test(text)) return 'Figma';
+  if (/QUICKBOOKS/i.test(text)) return 'QuickBooks';
+  if (/STAPLES/i.test(text)) return 'Staples';
+  if (/DOORDASH/i.test(text)) return 'DoorDash';
+  if (/UBER/i.test(text)) return 'Uber';
+  if (/ZOOM/i.test(text)) return 'Zoom';
+  if (/NOTION/i.test(text)) return 'Notion';
+  if (/FACEBK/i.test(text)) return 'Facebook Ads';
+  if (/PAYPAL/i.test(text)) return 'PayPal';
+  if (/DELTA\s+AIR/i.test(text)) return 'Delta Air Lines';
+  if (/INTEREST\s+PAYMENT/i.test(text)) return 'Interest Payment';
+  if (/MONTHLY\s+SERVICE\s+FEE/i.test(text)) return 'Monthly Service Fee';
   if (/AWS\s+CLOUD\s+SERVICES/i.test(text)) return 'AWS Cloud Services';
-  if (/GOOGLE\s+WORKSPACE/i.test(text)) return 'Google Workspace';
-  if (/GUSTO\s+PAYROLL/i.test(text)) return 'Gusto Payroll';
+  if (/GOOGLE/i.test(text)) return 'Google Workspace';
+  if (/GUSTO/i.test(text)) return 'Gusto Payroll';
   if (/GITHUB/i.test(text)) return 'GitHub Inc';
   if (/VERCEL/i.test(text)) return 'Vercel';
   if (/OFFICE\s+DEPOT/i.test(text)) return 'Office Depot';
@@ -177,6 +193,8 @@ export function isRedundantHeaderOrFooter(line: string): boolean {
   if (/^DATE\b.*AMOUNT\b/i.test(trimmed)) return true;
   if (/^CHECK NO\b/i.test(trimmed)) return true;
   if (/^TRANSACTION DETAILS?(\s*\(continued\))?$/i.test(trimmed)) return true;
+  if (/Sample statement with fictional data/i.test(trimmed)) return true;
+  if (/Deposits and credits are shown as positive amounts/i.test(trimmed)) return true;
   return false;
 }
 
@@ -224,19 +242,25 @@ export function parseChaseStatement(rawText: string, sourceFileName: string = 'c
     const line = lines[i];
 
     if (/Beginning Balance/i.test(line)) {
-      const match = line.match(/Beginning Balance:?\s*\$?([0-9.,]*\d[0-9.,]*)/i);
+      const match = line.match(/Beginning Balance:?\s*(-?\$?\s*-?[0-9.,]*\d[0-9.,]*)/i);
       if (match) beginningBalance = parseCurrency(match[1]);
     } else if (/Deposits and Additions/i.test(line) && !/DATE\s+DESCRIPTION/i.test(line)) {
-      const match = line.match(/Deposits and Additions:?\s*\$?([0-9.,]*\d[0-9.,]*)/i);
-      if (match) totalDeposits = parseCurrency(match[1]);
+      const match = line.match(/Deposits and Additions:?\s*(-?\$?\s*-?[0-9.,]*\d[0-9.,]*)/i);
+      if (match) totalDeposits = Math.abs(parseCurrency(match[1]));
     } else if (/Electronic Withdrawals/i.test(line) && !/DATE\s+DESCRIPTION/i.test(line)) {
-      const match = line.match(/Electronic Withdrawals:?\s*\$?([0-9.,]*\d[0-9.,]*)/i);
-      if (match) totalElectronicWithdrawals = parseCurrency(match[1]);
+      const match = line.match(/Electronic Withdrawals:?\s*(-?\$?\s*-?[0-9.,]*\d[0-9.,]*)/i);
+      if (match) totalElectronicWithdrawals += Math.abs(parseCurrency(match[1]));
+    } else if (/(ATM\s*&\s*Debit Card Withdrawals|Other Withdrawals)/i.test(line)) {
+      const match = line.match(/(?:ATM\s*&\s*Debit Card Withdrawals|Other Withdrawals):?\s*(-?\$?\s*-?[0-9.,]*\d[0-9.,]*)/i);
+      if (match) totalElectronicWithdrawals += Math.abs(parseCurrency(match[1]));
+    } else if (/^Fees:?\s*/i.test(line.trim())) {
+      const match = line.match(/Fees:?\s*(-?\$?\s*-?[0-9.,]*\d[0-9.,]*)/i);
+      if (match) totalElectronicWithdrawals += Math.abs(parseCurrency(match[1]));
     } else if (/Checks Paid/i.test(line) && !/CHECK NO\./i.test(line)) {
-      const match = line.match(/Checks Paid:?\s*\$?([0-9.,]*\d[0-9.,]*)/i);
-      if (match) checksPaid = parseCurrency(match[1]);
+      const match = line.match(/Checks Paid:?\s*(-?\$?\s*-?[0-9.,]*\d[0-9.,]*)/i);
+      if (match) checksPaid = Math.abs(parseCurrency(match[1]));
     } else if (/Ending Balance/i.test(line) && !/DAILY ENDING BALANCE/i.test(line)) {
-      const match = line.match(/Ending Balance:?\s*\$?([0-9.,]*\d[0-9.,]*)/i);
+      const match = line.match(/Ending Balance:?\s*(-?\$?\s*-?[0-9.,]*\d[0-9.,]*)/i);
       if (match) endingBalance = parseCurrency(match[1]);
     }
   }
@@ -284,18 +308,23 @@ export function parseChaseStatement(rawText: string, sourceFileName: string = 'c
     if (sectionHint === 'WITHDRAWALS') return { txType: 'DEBIT', txSection: 'Electronic Withdrawals' };
     if (sectionHint === 'CHECKS') return { txType: 'CHECK', txSection: 'Checks Paid' };
 
+    // 1. If memo contains "Deposit" (case-insensitive), strictly force type to CREDIT before checking for Check or #
+    if (/deposit/i.test(memo)) {
+      return { txType: 'CREDIT', txSection: 'Deposits and Additions' };
+    }
+
     const isNeg = rawAmtStr.startsWith('-') || /^\(/.test(rawAmtStr) || rawAmtStr.endsWith('-');
-    const checkMatch = memo.match(/\bCHECK\s*#?\s*(\d+)\b/i);
+    const checkMatch = memo.match(/\bCHECK\s*(?:NO\.?|#)?\s*(\d+)\b/i);
 
     if (checkMatch) return { txType: 'CHECK', txSection: 'Checks Paid' };
     if (isNeg) return { txType: 'DEBIT', txSection: 'Electronic Withdrawals' };
     if (
       rawAmtStr.startsWith('+') ||
-      /(?:DIRECT\s+DEPOSIT|MOBILE\s+DEPOSIT|ATM\s+DEPOSIT|\bDEPOSIT\b|\bCREDIT\b|\bREFUND\b|INTEREST|TRANSFER\s+IN|CLIENT\s+RETAINER|INCOMING)/i.test(memo)
+      /(?:DIRECT\s+DEPOSIT|MOBILE\s+DEPOSIT|ATM\s+DEPOSIT|\bDEPOSIT\b|\bCREDIT\b|\bREFUND\b|INTEREST|TRANSFER\s+IN|CLIENT\s+RETAINER|INCOMING|PAYMENT\s+FROM|\bZELLE\b)/i.test(memo)
     ) {
       return { txType: 'CREDIT', txSection: 'Deposits and Additions' };
     }
-    if (/(?:\bDEBIT\b|\bWITHDRAWAL\b|\bPURCHASE\b|\bPAYMENT\b|\bFEE\b|\bCHARGE\b|PAYROLL|OUTGOING)/i.test(memo)) {
+    if (/(?:\bDEBIT\b|\bWITHDRAWAL\b|\bPURCHASE\b|PAYMENT\s+TO|\bFEE\b|\bCHARGE\b|PAYROLL|OUTGOING|TRANSFER\s+TO)/i.test(memo)) {
       return { txType: 'DEBIT', txSection: 'Electronic Withdrawals' };
     }
     return { txType: 'CREDIT', txSection: 'Deposits and Additions' };
@@ -335,11 +364,11 @@ export function parseChaseStatement(rawText: string, sourceFileName: string = 'c
 
     // CHECKS PAID and TRANSACTION_DETAIL: check-number rows (CHECKNO  DATE  MEMO  AMT)
     if (currentSection === 'CHECKS' || currentSection === 'TRANSACTION_DETAIL') {
-      const crm = trimmed.match(/^(\d{3,6})\s+(\d{2}\/\d{2})\s+(.*?)\s*\$?([0-9.,]*\d[0-9.,]*)$/);
+      const crm = trimmed.match(/^(\d{3,6})\s+(\d{2}\/\d{2})\s+(.*?)\s+(-?\$?[0-9.,]*\d[0-9.,]*)$/);
       if (crm) {
         commitActiveTx();
         const [, checkNum, dateStr, desc, amtRaw] = crm;
-        const rawAmt = parseCurrency(amtRaw);
+        const rawAmt = Math.abs(parseCurrency(amtRaw));
         activeTx = {
           id: `tx_${txCounter++}`, date: dateStr, rawDate: dateStr,
           type: 'CHECK', cleanPayee: `Check #${checkNum}`,
@@ -354,16 +383,19 @@ export function parseChaseStatement(rawText: string, sourceFileName: string = 'c
     }
 
     // Standard date-rows (DATE  MEMO  AMOUNT  [RUNNING_BALANCE])
-    const rowWithBalance = trimmed.match(/^(\d{2}\/\d{2})\s+(.*?)\s+(-?\$?[0-9,.]+\.[0-9]{2})\s+(\$?[0-9,.]+\.[0-9]{2})$/);
-    const rowSingle      = trimmed.match(/^(\d{2}\/\d{2})\s+(.*?)\s*\$?([0-9.,]*\d[0-9.,]*)$/);
+    const rowWithBalance = trimmed.match(/^(\d{2}\/\d{2})\s+(.*?)\s+(-?\$?[0-9,.]+\.[0-9]{2})\s+(-?\$?[0-9,.]+\.[0-9]{2})$/);
+    const rowSingle      = trimmed.match(/^(\d{2}\/\d{2})\s+(.*?)\s+(-?\$?[0-9.,]*\d[0-9.,]*)$/);
     const dateMatch = rowWithBalance || rowSingle;
 
     if (dateMatch) {
       commitActiveTx();
       const dateStr   = dateMatch[1];
-      const memo      = dateMatch[2].trim();
-      const rawAmtStr = dateMatch[3].trim();
-      const rawAmt    = parseCurrency(rawAmtStr);
+      let   memo      = dateMatch[2].replace(/\s*-$/, '').trim();
+      let   rawAmtStr = dateMatch[3].trim();
+      if (dateMatch[2].trim().endsWith('-') && !rawAmtStr.startsWith('-')) {
+        rawAmtStr = '-' + rawAmtStr;
+      }
+      const rawAmt    = Math.abs(parseCurrency(rawAmtStr));
 
       const hint: 'DEPOSITS' | 'WITHDRAWALS' | 'CHECKS' | 'DYNAMIC' =
         currentSection === 'DEPOSITS' ? 'DEPOSITS' :
@@ -371,7 +403,7 @@ export function parseChaseStatement(rawText: string, sourceFileName: string = 'c
         currentSection === 'CHECKS' ? 'CHECKS' : 'DYNAMIC';
 
       const { txType, txSection } = classifyRow(memo, rawAmtStr, hint);
-      const checkMatch = memo.match(/\bCHECK\s*#?\s*(\d+)\b/i);
+      const checkMatch = txType === 'CHECK' ? memo.match(/\bCHECK\s*#?\s*(\d+)\b/i) : null;
 
       activeTx = {
         id: `tx_${txCounter++}`, date: dateStr, rawDate: dateStr,
@@ -392,6 +424,7 @@ export function parseChaseStatement(rawText: string, sourceFileName: string = 'c
   }
 
   commitActiveTx();
+  console.log('[ChaseParser] Extracted transactions.length after Phase A:', transactions.length);
 
   // ── Phase B: Dynamic table discovery (runs only when Phase A found nothing) ──
   //
@@ -464,11 +497,11 @@ export function parseChaseStatement(rawText: string, sourceFileName: string = 'c
         if (/^(DATE|CHECK NO\.)/i.test(trimmed) && !/\d{2}\/\d{2}/.test(trimmed)) continue;
 
         // Check-number rows
-        const crm = trimmed.match(/^(\d{3,6})\s+(\d{2}\/\d{2})\s+(.*?)\s*\$?([0-9.,]*\d[0-9.,]*)$/);
+        const crm = trimmed.match(/^(\d{3,6})\s+(\d{2}\/\d{2})\s+(.*?)\s+(-?\$?[0-9.,]*\d[0-9.,]*)$/);
         if (crm) {
           commitDynTx();
           const [, checkNum, dateStr, desc, amtRaw] = crm;
-          const rawAmt = parseCurrency(amtRaw);
+          const rawAmt = Math.abs(parseCurrency(amtRaw));
           dynTx = {
             id: `tx_${txCounter++}`, date: dateStr, rawDate: dateStr,
             type: 'CHECK', cleanPayee: `Check #${checkNum}`,
@@ -482,25 +515,28 @@ export function parseChaseStatement(rawText: string, sourceFileName: string = 'c
         }
 
         // Standard date-rows
-        const rowWithBalance = trimmed.match(/^(\d{2}\/\d{2})\s+(.*?)\s+(-?\$?[0-9,.]+\.[0-9]{2})\s+(\$?[0-9,.]+\.[0-9]{2})$/);
+        const rowWithBalance = trimmed.match(/^(\d{2}\/\d{2})\s+(.*?)\s+(-?\$?[0-9,.]+\.[0-9]{2})\s+(-?\$?[0-9,.]+\.[0-9]{2})$/);
         const rowSingle      = trimmed.match(/^(\d{2}\/\d{2})\s+(.*?)\s+(-?\$?[0-9.,]*\d[0-9.,]*)$/);
         const dateMatch = rowWithBalance || rowSingle;
 
         if (dateMatch) {
           commitDynTx();
           const dateStr   = dateMatch[1];
-          let   memo      = dateMatch[2].trim();
-          const rawAmtStr = dateMatch[3].trim();
-          const rawAmt    = parseCurrency(rawAmtStr);
+          let   memo      = dateMatch[2].replace(/\s*-$/, '').trim();
+          let   rawAmtStr = dateMatch[3].trim();
+          if (dateMatch[2].trim().endsWith('-') && !rawAmtStr.startsWith('-')) {
+            rawAmtStr = '-' + rawAmtStr;
+          }
+          const rawAmt    = Math.abs(parseCurrency(rawAmtStr));
 
           // Refine memo using fuzzy column map (fixed-width PDF layouts)
           if (descColIdx >= 0 && amtColIdx > descColIdx && rawLine.length > amtColIdx) {
             const candidate = rawLine.substring(descColIdx, amtColIdx).trim();
-            if (candidate.length > 2) memo = candidate;
+            if (candidate.length > 2) memo = candidate.replace(/\s*-$/, '').trim();
           }
 
           const { txType, txSection } = classifyRow(memo, rawAmtStr, 'DYNAMIC');
-          const checkMatch = memo.match(/\bCHECK\s*#?\s*(\d+)\b/i);
+          const checkMatch = txType === 'CHECK' ? memo.match(/\bCHECK\s*#?\s*(\d+)\b/i) : null;
 
           dynTx = {
             id: `tx_${txCounter++}`, date: dateStr, rawDate: dateStr,
@@ -523,6 +559,7 @@ export function parseChaseStatement(rawText: string, sourceFileName: string = 'c
       commitDynTx();
     }
   }
+  console.log('[ChaseParser] Extracted transactions.length after Phase B:', transactions.length);
 
   // 4. Mathematical Reconciliation Engine
   const parsedCredits = transactions
