@@ -25,10 +25,13 @@ export const BANK_REGISTRY: Record<string, BankParser> = {
 };
 
 /**
- * Auto-detects the bank from the first 1000 characters of raw extracted text
+ * Auto-detects the bank from the first 3000 characters of raw extracted text
  */
 export function detectBank(rawText: string): SupportedBankId {
-  const sample = rawText.slice(0, 1000).toLowerCase();
+  if (!rawText || rawText.trim().length === 0) {
+    return 'UNKNOWN';
+  }
+  const sample = rawText.slice(0, 3000).toLowerCase();
 
   // 1. Chase patterns
   if (
@@ -61,8 +64,7 @@ export function detectBank(rawText: string): SupportedBankId {
     return 'WELLS_FARGO';
   }
 
-  // Default fallback to Chase deterministic parser
-  return 'CHASE';
+  return 'UNKNOWN';
 }
 
 /**
@@ -107,6 +109,9 @@ export function sortTransactionsChronologically(
   });
 }
 
+export const UNRECOGNIZED_STATEMENT_ERROR =
+  'Could not recognize this statement layout. Please ensure it is an original PDF from a supported bank.';
+
 /**
  * Parse a single statement document with auto-detection
  */
@@ -116,8 +121,52 @@ export function parseStatement(
   forcedBank?: SupportedBankId
 ): StatementParseResult {
   const bankId = forcedBank || detectBank(rawText);
-  const parser = BANK_REGISTRY[bankId] || chaseParser;
-  return parser.parse(rawText, fileName);
+  const parser = BANK_REGISTRY[bankId];
+
+  if (!parser || bankId === 'UNKNOWN') {
+    return {
+      metadata: {
+        bankId: 'UNKNOWN',
+        bankName: 'Unknown Bank',
+        accountNumber: 'N/A',
+        statementPeriod: 'Unknown Period',
+        startDate: '',
+        endDate: '',
+        statementType: 'Unrecognized Statement',
+        fileCount: 1,
+        sourceFiles: [fileName],
+      },
+      summary: {
+        beginningBalance: 0,
+        totalDeposits: 0,
+        totalElectronicWithdrawals: 0,
+        checksPaid: 0,
+        endingBalance: 0,
+      },
+      transactions: [],
+      reconciliation: {
+        status: 'MISMATCH',
+        diff: 0,
+        beginningBalance: 0,
+        totalCredits: 0,
+        totalDebits: 0,
+        totalChecks: 0,
+        calculatedEnding: 0,
+        statementEnding: 0,
+        flaggedRowIndices: [],
+        details: UNRECOGNIZED_STATEMENT_ERROR,
+      },
+      rawText,
+      bankId: 'UNKNOWN',
+      error: UNRECOGNIZED_STATEMENT_ERROR,
+    };
+  }
+
+  const result = parser.parse(rawText, fileName);
+  if (!result.transactions || result.transactions.length === 0) {
+    result.error = UNRECOGNIZED_STATEMENT_ERROR;
+  }
+  return result;
 }
 
 /**
@@ -125,7 +174,42 @@ export function parseStatement(
  */
 export function parseMultipleStatements(documents: ExtractedDocument[]): StatementParseResult {
   if (!documents || documents.length === 0) {
-    return chaseParser.parse('', 'empty.pdf');
+    return {
+      metadata: {
+        bankId: 'UNKNOWN',
+        bankName: 'Unknown Bank',
+        accountNumber: 'N/A',
+        statementPeriod: 'Unknown Period',
+        startDate: '',
+        endDate: '',
+        statementType: 'Unrecognized Statement',
+        fileCount: 0,
+        sourceFiles: [],
+      },
+      summary: {
+        beginningBalance: 0,
+        totalDeposits: 0,
+        totalElectronicWithdrawals: 0,
+        checksPaid: 0,
+        endingBalance: 0,
+      },
+      transactions: [],
+      reconciliation: {
+        status: 'MISMATCH',
+        diff: 0,
+        beginningBalance: 0,
+        totalCredits: 0,
+        totalDebits: 0,
+        totalChecks: 0,
+        calculatedEnding: 0,
+        statementEnding: 0,
+        flaggedRowIndices: [],
+        details: UNRECOGNIZED_STATEMENT_ERROR,
+      },
+      rawText: '',
+      bankId: 'UNKNOWN',
+      error: UNRECOGNIZED_STATEMENT_ERROR,
+    };
   }
 
   if (documents.length === 1) {
@@ -134,6 +218,48 @@ export function parseMultipleStatements(documents: ExtractedDocument[]): Stateme
 
   // Parse each individual statement
   const individualResults = documents.map((doc) => parseStatement(doc.text, doc.fileName));
+
+  const totalTxCount = individualResults.reduce((acc, r) => acc + (r.transactions?.length || 0), 0);
+  const allUnknown = individualResults.every((r) => r.bankId === 'UNKNOWN');
+
+  if (totalTxCount === 0 || allUnknown) {
+    return {
+      metadata: {
+        bankId: 'UNKNOWN',
+        bankName: 'Unknown Bank',
+        accountNumber: 'N/A',
+        statementPeriod: 'Unknown Period',
+        startDate: '',
+        endDate: '',
+        statementType: 'Unrecognized Statement',
+        fileCount: documents.length,
+        sourceFiles: documents.map((d) => d.fileName),
+      },
+      summary: {
+        beginningBalance: 0,
+        totalDeposits: 0,
+        totalElectronicWithdrawals: 0,
+        checksPaid: 0,
+        endingBalance: 0,
+      },
+      transactions: [],
+      reconciliation: {
+        status: 'MISMATCH',
+        diff: 0,
+        beginningBalance: 0,
+        totalCredits: 0,
+        totalDebits: 0,
+        totalChecks: 0,
+        calculatedEnding: 0,
+        statementEnding: 0,
+        flaggedRowIndices: [],
+        details: UNRECOGNIZED_STATEMENT_ERROR,
+      },
+      rawText: documents.map((d) => `=== FILE: ${d.fileName} ===\n${d.text}`).join('\n\n'),
+      bankId: 'UNKNOWN',
+      error: UNRECOGNIZED_STATEMENT_ERROR,
+    };
+  }
 
   // Determine chronological order of statements using start dates
   const sortedStatements = [...individualResults].sort((a, b) => {

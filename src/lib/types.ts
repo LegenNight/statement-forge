@@ -71,6 +71,7 @@ export interface StatementParseResult {
   reconciliation: ReconciliationResult;
   rawText: string;
   bankId: SupportedBankId;
+  error?: string;
 }
 
 // Backward-compatible alias

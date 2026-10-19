@@ -100,6 +100,10 @@ export default function StatementForgeApp() {
   const [rawPasteText, setRawPasteText] = useState<string>('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [sourceFiles, setSourceFiles] = useState<string[]>(['chase_business_oct2026.pdf']);
+  const [parserError, setParserError] = useState<string | null>(null);
+
+  const PARSER_ERROR_MESSAGE =
+    'Could not recognize this statement layout. Please ensure it is an original PDF from a supported bank.';
 
   // Collapsible Accordions State
   const [openAccordions, setOpenAccordions] = useState<{ [key: string]: boolean }>({
@@ -171,8 +175,19 @@ export default function StatementForgeApp() {
   // Load single statement text into state
   const loadSingleStatement = (text: string, sourceName: string = 'statement.pdf') => {
     setIsLoading(true);
+    setParserError(null);
     try {
       const parsed = parseStatement(text, sourceName);
+      if (!parsed || !parsed.transactions || parsed.transactions.length === 0 || parsed.bankId === 'UNKNOWN' || parsed.error) {
+        setParserError(PARSER_ERROR_MESSAGE);
+        showToast(PARSER_ERROR_MESSAGE);
+        setStatementData(parsed);
+        setRawTransactions([]);
+        setSelectedTxIds(new Set());
+        setSourceFiles([sourceName]);
+        return;
+      }
+      setParserError(null);
       setStatementData(parsed);
       setRawTransactions(parsed.transactions);
       setSelectedTxIds(new Set());
@@ -180,7 +195,9 @@ export default function StatementForgeApp() {
       showToast(`Loaded ${parsed.transactions.length} transactions from ${sourceName}`);
     } catch (err: any) {
       console.error(err);
-      showToast('Error parsing statement text. Please check format.');
+      setParserError(PARSER_ERROR_MESSAGE);
+      showToast(PARSER_ERROR_MESSAGE);
+      setRawTransactions([]);
     } finally {
       setIsLoading(false);
     }
@@ -189,8 +206,19 @@ export default function StatementForgeApp() {
   // Load multiple statements from extracted document strings
   const loadMultipleStatementDocs = (docs: ExtractedDocument[]) => {
     setIsLoading(true);
+    setParserError(null);
     try {
       const parsed = parseMultipleStatements(docs);
+      if (!parsed || !parsed.transactions || parsed.transactions.length === 0 || parsed.bankId === 'UNKNOWN' || parsed.error) {
+        setParserError(PARSER_ERROR_MESSAGE);
+        showToast(PARSER_ERROR_MESSAGE);
+        setStatementData(parsed);
+        setRawTransactions([]);
+        setSelectedTxIds(new Set());
+        setSourceFiles(docs.map((d) => d.fileName));
+        return;
+      }
+      setParserError(null);
       setStatementData(parsed);
       setRawTransactions(parsed.transactions);
       setSelectedTxIds(new Set());
@@ -198,7 +226,9 @@ export default function StatementForgeApp() {
       showToast(`Processed ${docs.length} statements (${parsed.transactions.length} transactions)`);
     } catch (err: any) {
       console.error(err);
-      showToast('Error parsing statements.');
+      setParserError(PARSER_ERROR_MESSAGE);
+      showToast(PARSER_ERROR_MESSAGE);
+      setRawTransactions([]);
     } finally {
       setIsLoading(false);
     }
@@ -210,6 +240,7 @@ export default function StatementForgeApp() {
     if (fileArray.length === 0) return;
 
     setIsLoading(true);
+    setParserError(null);
     try {
       const docs: ExtractedDocument[] = [];
       for (const f of fileArray) {
@@ -220,12 +251,27 @@ export default function StatementForgeApp() {
       }
 
       if (docs.length === 0) {
-        showToast('No readable text found in document(s)');
+        setParserError(PARSER_ERROR_MESSAGE);
+        showToast(PARSER_ERROR_MESSAGE);
+        setStatementData(null);
+        setRawTransactions([]);
         setIsLoading(false);
         return;
       }
 
       const parsed = parseMultipleStatements(docs);
+      if (!parsed || !parsed.transactions || parsed.transactions.length === 0 || parsed.bankId === 'UNKNOWN' || parsed.error) {
+        setParserError(PARSER_ERROR_MESSAGE);
+        showToast(PARSER_ERROR_MESSAGE);
+        setStatementData(parsed);
+        setRawTransactions([]);
+        setSelectedTxIds(new Set());
+        setSourceFiles(docs.map((d) => d.fileName));
+        setIsLoading(false);
+        return;
+      }
+
+      setParserError(null);
       setStatementData(parsed);
       setRawTransactions(parsed.transactions);
       setSelectedTxIds(new Set());
@@ -233,7 +279,9 @@ export default function StatementForgeApp() {
       showToast(`Successfully processed ${docs.length} file${docs.length > 1 ? 's' : ''} (${parsed.transactions.length} rows)`);
     } catch (err) {
       console.error(err);
-      showToast('Failed to process statements client-side.');
+      setParserError(PARSER_ERROR_MESSAGE);
+      showToast(PARSER_ERROR_MESSAGE);
+      setRawTransactions([]);
     } finally {
       setIsLoading(false);
     }
@@ -757,6 +805,24 @@ export default function StatementForgeApp() {
           </div>
         </div>
 
+        {parserError && (
+          <div className="mt-4 max-w-xl mx-auto p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center justify-between gap-3 text-left shadow-xs">
+            <div className="flex items-center gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span className="font-medium">{parserError}</span>
+            </div>
+            <button
+              onClick={() => {
+                setParserError(null);
+                loadSingleStatement(SAMPLE_CHASE_STATEMENT, 'chase_business_oct2026.pdf');
+              }}
+              className="px-3 py-1 rounded-full bg-white border border-rose-200 text-rose-700 hover:bg-rose-50 font-semibold shrink-0 transition-colors shadow-2xs"
+            >
+              Reload Sample
+            </button>
+          </div>
+        )}
+
         {/* 4. FEATURES GRID (3 Cards) */}
         <div id="features" className="mt-14 grid grid-cols-1 md:grid-cols-3 gap-6 max-w-5xl mx-auto text-left">
           {/* Card 1: Total Privacy */}
@@ -838,7 +904,17 @@ export default function StatementForgeApp() {
 
           {/* Strict Invariant Reconciliation Badge for Post-Build Verification */}
           <div>
-            {currentReconciliation?.status === 'BALANCED' ? (
+            {parserError ? (
+              <div
+                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-rose-50 text-rose-800 text-xs font-medium border border-rose-200 shadow-2xs"
+                title={parserError}
+              >
+                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>
+                  <strong>[PARSER ERROR]</strong> — Unrecognized statement layout
+                </span>
+              </div>
+            ) : currentReconciliation?.status === 'BALANCED' ? (
               <div
                 className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-emerald-50 text-emerald-800 text-xs font-medium border border-emerald-200 shadow-2xs"
                 title="Beginning + In - Out matches Statement Ending Balance to the cent"
@@ -1450,54 +1526,89 @@ export default function StatementForgeApp() {
           </div>
 
           {/* Table Container */}
-          <div className="overflow-x-auto max-h-[calc(100vh-340px)] min-h-[340px]">
-            <table className="w-full text-left border-collapse font-sans text-xs">
-              <thead className="bg-slate-50 text-slate-500 sticky top-0 z-10 text-[11px] font-medium uppercase tracking-wider select-none border-b border-slate-200">
-                <tr>
-                  <th className="w-10 px-4 py-3 text-center">
-                    <input
-                      type="checkbox"
-                      checked={
-                        displayTransactions.length > 0 &&
-                        selectedTxIds.size === displayTransactions.length
-                      }
-                      onChange={handleToggleSelectAll}
-                      className="rounded border-slate-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
-                    />
-                  </th>
-                  <th className="w-24 px-4 py-3">Date</th>
-                  <th className="w-28 px-4 py-3">Type</th>
-                  <th className="px-4 py-3">Vendor / Payee</th>
-                  <th className="px-4 py-3 hidden md:table-cell">Original Memo</th>
-                  {fileCount > 1 && (
-                    <th className="w-36 px-4 py-3 hidden lg:table-cell">Source File</th>
-                  )}
-                  <th className="w-36 px-4 py-3 text-right">Amount ($)</th>
-                  <th className="w-16 px-4 py-3 text-center">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {displayTransactions.length === 0 ? (
+          {parserError ? (
+            <div className="p-12 text-center flex flex-col items-center justify-center gap-3 min-h-[340px] bg-rose-50/20">
+              <div className="w-12 h-12 rounded-full bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 mb-1">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <h3 className="text-base font-semibold text-slate-900">Unrecognized Statement Layout</h3>
+              <p className="text-sm font-medium text-rose-700 max-w-lg">
+                Could not recognize this statement layout. Please ensure it is an original PDF from a supported bank.
+              </p>
+              <button
+                onClick={() => {
+                  setParserError(null);
+                  setSearchQuery('');
+                  setTypeFilter('ALL');
+                  loadSingleStatement(SAMPLE_CHASE_STATEMENT, 'chase_business_oct2026.pdf');
+                }}
+                className="mt-3 px-4 py-2 rounded-full text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white transition-colors flex items-center gap-1.5 shadow-xs"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                Reload Chase Sample Statement
+              </button>
+            </div>
+          ) : (
+            <div className="overflow-x-auto max-h-[calc(100vh-340px)] min-h-[340px]">
+              <table className="w-full text-left border-collapse font-sans text-xs">
+                <thead className="bg-slate-50 text-slate-500 sticky top-0 z-10 text-[11px] font-medium uppercase tracking-wider select-none border-b border-slate-200">
                   <tr>
-                    <td colSpan={fileCount > 1 ? 8 : 7} className="text-center py-20 text-slate-400">
-                      <div className="flex flex-col items-center justify-center gap-2">
-                        <FileSpreadsheet className="w-10 h-10 text-slate-300" />
-                        <p className="text-sm font-medium text-slate-600">No transactions match current filter.</p>
-                        <button
-                          onClick={() => {
-                            setSearchQuery('');
-                            setTypeFilter('ALL');
-                            loadSingleStatement(SAMPLE_CHASE_STATEMENT, 'chase_business_oct2026.pdf');
-                          }}
-                          className="mt-2 text-xs text-blue-600 hover:text-blue-700 font-medium flex items-center gap-1"
-                        >
-                          <Sparkles className="w-3.5 h-3.5 text-blue-600" />
-                          Reload Chase Sample Statement
-                        </button>
-                      </div>
-                    </td>
+                    <th className="w-10 px-4 py-3 text-center">
+                      <input
+                        type="checkbox"
+                        checked={
+                          displayTransactions.length > 0 &&
+                          selectedTxIds.size === displayTransactions.length
+                        }
+                        onChange={handleToggleSelectAll}
+                        className="rounded border-slate-300 text-blue-600 focus:ring-blue-600 cursor-pointer"
+                      />
+                    </th>
+                    <th className="w-24 px-4 py-3">Date</th>
+                    <th className="w-28 px-4 py-3">Type</th>
+                    <th className="px-4 py-3">Vendor / Payee</th>
+                    <th className="px-4 py-3 hidden md:table-cell">Original Memo</th>
+                    {fileCount > 1 && (
+                      <th className="w-36 px-4 py-3 hidden lg:table-cell">Source File</th>
+                    )}
+                    <th className="w-36 px-4 py-3 text-right">Amount ($)</th>
+                    <th className="w-16 px-4 py-3 text-center">Action</th>
                   </tr>
-                ) : (
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {displayTransactions.length === 0 ? (
+                    <tr>
+                      <td colSpan={fileCount > 1 ? 8 : 7} className="text-center py-20 text-slate-400">
+                        <div className="flex flex-col items-center justify-center gap-2">
+                          {parserError ? (
+                            <>
+                              <AlertTriangle className="w-10 h-10 text-rose-500" />
+                              <p className="text-sm font-medium text-rose-600 max-w-lg">
+                                Could not recognize this statement layout. Please ensure it is an original PDF from a supported bank.
+                              </p>
+                            </>
+                          ) : (
+                            <>
+                              <FileSpreadsheet className="w-10 h-10 text-slate-300" />
+                              <p className="text-sm font-medium text-slate-600">No transactions match current filter.</p>
+                            </>
+                          )}
+                          <button
+                            onClick={() => {
+                              setParserError(null);
+                              setSearchQuery('');
+                              setTypeFilter('ALL');
+                              loadSingleStatement(SAMPLE_CHASE_STATEMENT, 'chase_business_oct2026.pdf');
+                            }}
+                            className="mt-2 text-xs text-blue-600 hover:text-blue-700 font-medium flex items-center gap-1"
+                          >
+                            <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+                            Reload Chase Sample Statement
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
                   displayTransactions.map((tx) => {
                     const isSelected = selectedTxIds.has(tx.id);
                     const isCredit = tx.type === 'CREDIT';
@@ -1685,6 +1796,7 @@ export default function StatementForgeApp() {
               </tbody>
             </table>
           </div>
+          )}
 
           {/* Table Footer */}
           <div className="bg-slate-50 px-6 py-3 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-500 border-t border-slate-200">
@@ -2086,7 +2198,7 @@ export default function StatementForgeApp() {
 
                 <div className="pt-2 flex items-center justify-between gap-3">
                   <a
-                    href="https://gumroad.com"
+                    href="https://assaytools.gumroad.com/l/statementforge"
                     target="_blank"
                     rel="noreferrer"
                     className="text-xs text-blue-600 hover:text-blue-700 font-medium hover:underline"
