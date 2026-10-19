@@ -87,18 +87,14 @@ export function detectBank(rawText: string): SupportedBankId {
   if (!rawText || rawText.trim().length === 0) {
     return 'UNKNOWN';
   }
-  const sample = rawText.slice(0, 3000).toLowerCase();
+  const sample = rawText.slice(0, 3000);
 
-  // 1. Chase patterns
-  if (
-    sample.includes('jpmorgan chase') ||
-    sample.includes('chase bank') ||
-    sample.includes('chase business') ||
-    sample.includes('columbus oh 43218') ||
-    sample.includes('chase complete checking')
-  ) {
+  // 1. Chase patterns: check for /(JPMorgan Chase|Chase Business)/i anywhere in the first few lines of the text
+  if (/(JPMorgan Chase|Chase Business)/i.test(sample)) {
     return 'CHASE';
   }
+
+  const sampleLower = sample.toLowerCase();
 
   // 2. American Express patterns
   if (

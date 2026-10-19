@@ -468,13 +468,7 @@ export const chaseParser: BankParser = {
   bankId: 'CHASE',
   bankName: 'JPMorgan Chase',
   detect(first1000Chars: string): boolean {
-    const s = first1000Chars.toLowerCase();
-    return (
-      s.includes('jpmorgan chase') ||
-      s.includes('chase bank') ||
-      s.includes('chase business') ||
-      s.includes('columbus oh 43218')
-    );
+    return /(JPMorgan Chase|Chase Business)/i.test(first1000Chars);
   },
   parse(rawText: string, sourceFileName?: string): StatementParseResult {
     return parseChaseStatement(rawText, sourceFileName);
