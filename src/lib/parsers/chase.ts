@@ -194,6 +194,7 @@ export function isRedundantHeaderOrFooter(line: string): boolean {
   if (/^(DATE\s+DESCRIPTION|CHECK NO\.\s+DATE PAID|DATE\s+AMOUNT)/i.test(trimmed)) return true;
   if (/^DATE\b.*AMOUNT\b/i.test(trimmed)) return true;
   if (/^CHECK NO\b/i.test(trimmed)) return true;
+  if (/^TRANSACTION DETAILS?(\s*\(continued\))?$/i.test(trimmed)) return true;
   return false;
 }
 
@@ -262,10 +263,16 @@ export function parseChaseStatement(rawText: string, sourceFileName: string = 'c
 
   // 3. Section-Based Transaction Parsing
   const transactions: ParsedTransaction[] = [];
-  type CurrentSection = 'NONE' | 'DEPOSITS' | 'WITHDRAWALS' | 'CHECKS';
+  type CurrentSection = 'NONE' | 'DEPOSITS' | 'WITHDRAWALS' | 'CHECKS' | 'TRANSACTION_DETAIL';
   let currentSection: CurrentSection = 'NONE';
   let activeTx: ParsedTransaction | null = null;
   let txCounter = 1;
+
+  // Check if standard categorized sections exist in raw text
+  const hasCategorizedSections =
+    /DEPOSITS AND ADDITIONS/i.test(rawText) ||
+    /CHECKS PAID/i.test(rawText) ||
+    /ELECTRONIC WITHDRAWALS/i.test(rawText);
 
   function commitActiveTx() {
     if (activeTx) {
@@ -296,6 +303,10 @@ export function parseChaseStatement(rawText: string, sourceFileName: string = 'c
       commitActiveTx();
       currentSection = 'WITHDRAWALS';
       continue;
+    } else if (!hasCategorizedSections && /^TRANSACTION DETAILS?/i.test(trimmed)) {
+      commitActiveTx();
+      currentSection = 'TRANSACTION_DETAIL';
+      continue;
     } else if (
       /^DAILY ENDING BALANCE/i.test(trimmed) ||
       /^SERVICE CHARGE SUMMARY/i.test(trimmed) ||
@@ -317,6 +328,97 @@ export function parseChaseStatement(rawText: string, sourceFileName: string = 'c
 
     if (/^(DATE\s+DESCRIPTION|CHECK NO\.\s+DATE PAID)/i.test(trimmed)) {
       continue;
+    }
+
+    // Section: TRANSACTION DETAIL (Single-table unified layout)
+    if (currentSection === 'TRANSACTION_DETAIL') {
+      const checkRowMatch = trimmed.match(/^(\d{3,6})\s+(\d{2}\/\d{2})\s+(.*?)\s*\$?([0-9.,]*\d[0-9.,]*)$/);
+      if (checkRowMatch) {
+        commitActiveTx();
+        const checkNum = checkRowMatch[1];
+        const dateStr = checkRowMatch[2];
+        const desc = checkRowMatch[3].trim() || `Check #${checkNum}`;
+        const rawAmt = parseCurrency(checkRowMatch[4]);
+
+        activeTx = {
+          id: `tx_${txCounter++}`,
+          date: dateStr,
+          rawDate: dateStr,
+          type: 'CHECK',
+          cleanPayee: `Check #${checkNum}`,
+          originalMemo: desc,
+          amount: -rawAmt,
+          rawAmount: rawAmt,
+          checkNumber: checkNum,
+          section: 'Checks Paid',
+          lineNumber: i + 1,
+          bankId: 'CHASE',
+          bankName: 'JPMorgan Chase',
+          sourceFile: sourceFileName,
+        };
+        commitActiveTx();
+        continue;
+      }
+
+      // Check for row with running balance: DATE MEMO AMOUNT BALANCE
+      const rowWithBalanceMatch = trimmed.match(/^(\d{2}\/\d{2})\s+(.*?)\s+(-?\$?[0-9,.]+\.[0-9]{2})\s+(\$?[0-9,.]+\.[0-9]{2})$/);
+      // Check for row with single amount: DATE MEMO AMOUNT
+      const rowSingleAmountMatch = trimmed.match(/^(\d{2}\/\d{2})\s+(.*?)\s*(-?\$?[0-9.,]*\d[0-9.,]*)$/);
+
+      const match = rowWithBalanceMatch || rowSingleAmountMatch;
+      if (match) {
+        commitActiveTx();
+        const dateStr = match[1];
+        const memo = match[2].trim();
+        const rawAmtStr = match[3].trim();
+        const rawAmt = parseCurrency(rawAmtStr);
+
+        const isNegativeAmount = rawAmtStr.includes('-') || /^\(.*\)$/.test(rawAmtStr) || rawAmtStr.endsWith('-');
+        const checkMatch = memo.match(/\bCHECK\s*#?\s*(\d+)\b/i);
+        const isCheck = !!checkMatch;
+
+        let txType: TransactionType;
+        let txSection: string;
+
+        if (isCheck) {
+          txType = 'CHECK';
+          txSection = 'Checks Paid';
+        } else if (isNegativeAmount) {
+          txType = 'DEBIT';
+          txSection = 'Electronic Withdrawals';
+        } else if (
+          rawAmtStr.includes('+') ||
+          (/(?:DIRECT\s+DEPOSIT|MOBILE\s+DEPOSIT|ATM\s+DEPOSIT|\bDEPOSIT\b|\bCREDIT\b|\bREFUND\b|INTEREST\s+PAYMENT|TRANSFER\s+INCOMING|CLIENT\s+RETAINER)/i.test(memo) &&
+            !/(?:DEPOSIT\s+RETURNED|BILL\s+PAYMENT)/i.test(memo))
+        ) {
+          txType = 'CREDIT';
+          txSection = 'Deposits and Additions';
+        } else if (/(?:DEBIT|WITHDRAWAL|PURCHASE|PAYMENT|FEE|CHARGE|OUTGOING|PAYROLL)/i.test(memo)) {
+          txType = 'DEBIT';
+          txSection = 'Electronic Withdrawals';
+        } else {
+          txType = 'CREDIT';
+          txSection = 'Deposits and Additions';
+        }
+
+        activeTx = {
+          id: `tx_${txCounter++}`,
+          date: dateStr,
+          rawDate: dateStr,
+          type: txType,
+          cleanPayee: isCheck && checkMatch ? `Check #${checkMatch[1]}` : '',
+          originalMemo: memo,
+          amount: txType === 'CREDIT' ? rawAmt : -rawAmt,
+          rawAmount: rawAmt,
+          checkNumber: checkMatch ? checkMatch[1] : undefined,
+          section: txSection,
+          lineNumber: i + 1,
+          bankId: 'CHASE',
+          bankName: 'JPMorgan Chase',
+          sourceFile: sourceFileName,
+        };
+        continue;
+      }
     }
 
     // Section: CHECKS PAID
