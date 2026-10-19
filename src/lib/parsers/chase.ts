@@ -103,14 +103,57 @@ export function cleanPayeeName(originalMemo: string, type: TransactionType, chec
 }
 
 /**
+ * Normalizes a currency or amount string against PDF.js text-layer formatting errors:
+ * 1. Strips all commas entirely.
+ * 2. If a string contains multiple periods (e.g. misreading a thousands comma as a decimal),
+ *    removes all but the very last period.
+ */
+export function normalizeCurrencyString(raw: string | number): string {
+  if (typeof raw === 'number') {
+    return isNaN(raw) ? '0.00' : raw.toFixed(2);
+  }
+  if (!raw || typeof raw !== 'string') {
+    return '0.00';
+  }
+
+  let str = raw.trim();
+
+  // Detect negative signs (e.g. -123, -$123, or accounting parens (123))
+  const isNegative = str.startsWith('-') || /^\(.*\)$/.test(str) || str.endsWith('-');
+
+  // Remove currency symbols, spaces, parentheses, negative signs
+  str = str.replace(/[$,\s()\-]/g, '');
+
+  // Strip separators: Remove all commas entirely
+  str = str.replace(/,/g, '');
+
+  // If a string contains multiple periods, remove all but the very last period
+  const lastDotIndex = str.lastIndexOf('.');
+  if (lastDotIndex !== -1) {
+    const beforeLastDot = str.substring(0, lastDotIndex).replace(/\./g, '');
+    const afterLastDot = str.substring(lastDotIndex + 1);
+    str = beforeLastDot + '.' + afterLastDot;
+  }
+
+  if (!str || str === '.') {
+    return '0.00';
+  }
+
+  return isNegative ? `-${str}` : str;
+}
+
+/**
  * Parse an amount string into a normalized floating point number.
  * e.g., "$14,850.20" -> 14850.2
+ * e.g., "1.234.56" -> 1234.56
  */
-export function parseCurrency(str: string): number {
+export function parseCurrency(str: string | number): number {
+  if (typeof str === 'number') {
+    return isNaN(str) ? 0 : Math.round(str * 100) / 100;
+  }
   if (!str) return 0;
-  // Remove currency symbols, commas, spaces
-  const cleaned = str.replace(/[$,\s]/g, '').trim();
-  const val = parseFloat(cleaned);
+  const normalized = normalizeCurrencyString(str);
+  const val = parseFloat(normalized);
   return isNaN(val) ? 0 : Math.round(val * 100) / 100;
 }
 
@@ -200,19 +243,19 @@ export function parseChaseStatement(rawText: string, sourceFileName: string = 'c
     const line = lines[i];
 
     if (/Beginning Balance/i.test(line)) {
-      const match = line.match(/Beginning Balance:?\s*\$?([0-9,]+\.[0-9]{2})/i);
+      const match = line.match(/Beginning Balance:?\s*\$?([0-9.,]*\d[0-9.,]*)/i);
       if (match) beginningBalance = parseCurrency(match[1]);
     } else if (/Deposits and Additions/i.test(line) && !/DATE\s+DESCRIPTION/i.test(line)) {
-      const match = line.match(/Deposits and Additions:?\s*\$?([0-9,]+\.[0-9]{2})/i);
+      const match = line.match(/Deposits and Additions:?\s*\$?([0-9.,]*\d[0-9.,]*)/i);
       if (match) totalDeposits = parseCurrency(match[1]);
     } else if (/Electronic Withdrawals/i.test(line) && !/DATE\s+DESCRIPTION/i.test(line)) {
-      const match = line.match(/Electronic Withdrawals:?\s*\$?([0-9,]+\.[0-9]{2})/i);
+      const match = line.match(/Electronic Withdrawals:?\s*\$?([0-9.,]*\d[0-9.,]*)/i);
       if (match) totalElectronicWithdrawals = parseCurrency(match[1]);
     } else if (/Checks Paid/i.test(line) && !/CHECK NO\./i.test(line)) {
-      const match = line.match(/Checks Paid:?\s*\$?([0-9,]+\.[0-9]{2})/i);
+      const match = line.match(/Checks Paid:?\s*\$?([0-9.,]*\d[0-9.,]*)/i);
       if (match) checksPaid = parseCurrency(match[1]);
     } else if (/Ending Balance/i.test(line) && !/DAILY ENDING BALANCE/i.test(line)) {
-      const match = line.match(/Ending Balance:?\s*\$?([0-9,]+\.[0-9]{2})/i);
+      const match = line.match(/Ending Balance:?\s*\$?([0-9.,]*\d[0-9.,]*)/i);
       if (match) endingBalance = parseCurrency(match[1]);
     }
   }
@@ -278,7 +321,7 @@ export function parseChaseStatement(rawText: string, sourceFileName: string = 'c
 
     // Section: CHECKS PAID
     if (currentSection === 'CHECKS') {
-      const checkRowMatch = trimmed.match(/^(\d{3,6})\s+(\d{2}\/\d{2})\s+(.*?)\$?([0-9,]+\.[0-9]{2})$/);
+      const checkRowMatch = trimmed.match(/^(\d{3,6})\s+(\d{2}\/\d{2})\s+(.*?)\s*\$?([0-9.,]*\d[0-9.,]*)$/);
       if (checkRowMatch) {
         commitActiveTx();
         const checkNum = checkRowMatch[1];
@@ -308,7 +351,7 @@ export function parseChaseStatement(rawText: string, sourceFileName: string = 'c
     }
 
     // Section: DEPOSITS or WITHDRAWALS
-    const dateRowMatch = trimmed.match(/^(\d{2}\/\d{2})\s+(.*?)\$?([0-9,]+\.[0-9]{2})$/);
+    const dateRowMatch = trimmed.match(/^(\d{2}\/\d{2})\s+(.*?)\s*\$?([0-9.,]*\d[0-9.,]*)$/);
     if (dateRowMatch) {
       commitActiveTx();
       const dateStr = dateRowMatch[1];

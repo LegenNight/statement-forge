@@ -39,16 +39,16 @@ export function parseAmexStatement(rawText: string, sourceFileName: string = 'am
 
   for (const line of lines) {
     if (/Previous Balance/i.test(line)) {
-      const m = line.match(/Previous Balance:?\s*\$?([0-9,]+\.[0-9]{2})/i);
+      const m = line.match(/Previous Balance:?\s*\$?([0-9.,]*\d[0-9.,]*)/i);
       if (m) beginningBalance = parseCurrency(m[1]);
     } else if (/(Payments and Credits|Payments\/Credits)/i.test(line)) {
-      const m = line.match(/(?:Payments and Credits|Payments\/Credits):?\s*\$?([0-9,]+\.[0-9]{2})/i);
+      const m = line.match(/(?:Payments and Credits|Payments\/Credits):?\s*\$?([0-9.,]*\d[0-9.,]*)/i);
       if (m) totalPayments = parseCurrency(m[1]);
     } else if (/(New Charges|New Transactions)/i.test(line)) {
-      const m = line.match(/(?:New Charges|New Transactions):?\s*\$?([0-9,]+\.[0-9]{2})/i);
+      const m = line.match(/(?:New Charges|New Transactions):?\s*\$?([0-9.,]*\d[0-9.,]*)/i);
       if (m) totalCharges = parseCurrency(m[1]);
     } else if (/(Total Balance Due|New Balance|Ending Balance)/i.test(line)) {
-      const m = line.match(/(?:Total Balance Due|New Balance|Ending Balance):?\s*\$?([0-9,]+\.[0-9]{2})/i);
+      const m = line.match(/(?:Total Balance Due|New Balance|Ending Balance):?\s*\$?([0-9.,]*\d[0-9.,]*)/i);
       if (m) endingBalance = parseCurrency(m[1]);
     }
   }
@@ -60,7 +60,7 @@ export function parseAmexStatement(rawText: string, sourceFileName: string = 'am
     const trimmed = lines[i].trim();
     if (!trimmed) continue;
 
-    const rowMatch = trimmed.match(/^(\d{2}\/\d{2})\s+(.*?)\s+(-?\$?[0-9,]+\.[0-9]{2})$/);
+    const rowMatch = trimmed.match(/^(\d{2}\/\d{2})\s+(.*?)\s+(-?\$?[0-9.,]*\d[0-9.,]*)$/);
     if (rowMatch) {
       const dateStr = rowMatch[1];
       const memo = rowMatch[2].trim();

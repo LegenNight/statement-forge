@@ -10,11 +10,67 @@ import {
   StatementSummary,
   SupportedBankId,
 } from './types';
-import { chaseParser, formatCurrency, parseCurrency, cleanPayeeName } from './parsers/chase';
+import { chaseParser, formatCurrency, cleanPayeeName } from './parsers/chase';
 import { amexParser } from './parsers/amex';
 
 export * from './types';
-export { formatCurrency, parseCurrency, cleanPayeeName };
+
+/**
+ * Normalizes currency and amount strings by intercepting them before float/integer conversion.
+ * Robust against PDF.js text-layer formatting errors:
+ * 1. Strips all commas entirely.
+ * 2. If a string contains multiple periods (e.g. misreading a thousands comma as a decimal),
+ *    removes all but the very last period.
+ */
+export function normalizeCurrencyString(raw: string | number): string {
+  if (typeof raw === 'number') {
+    return isNaN(raw) ? '0.00' : raw.toFixed(2);
+  }
+  if (!raw || typeof raw !== 'string') {
+    return '0.00';
+  }
+
+  let str = raw.trim();
+
+  // Detect negative signs (e.g. -123, -$123, or accounting parens (123))
+  const isNegative = str.startsWith('-') || /^\(.*\)$/.test(str) || str.endsWith('-');
+
+  // Strip currency symbols, spaces, parentheses, negative signs
+  str = str.replace(/[$,\s()\-]/g, '');
+
+  // Strip separators: Remove all commas entirely
+  str = str.replace(/,/g, '');
+
+  // If a string contains multiple periods, remove all but the very last period
+  const lastDotIndex = str.lastIndexOf('.');
+  if (lastDotIndex !== -1) {
+    const beforeLastDot = str.substring(0, lastDotIndex).replace(/\./g, '');
+    const afterLastDot = str.substring(lastDotIndex + 1);
+    str = beforeLastDot + '.' + afterLastDot;
+  }
+
+  if (!str || str === '.') {
+    return '0.00';
+  }
+
+  return isNegative ? `-${str}` : str;
+}
+
+/**
+ * Robust currency parser: normalizes raw string against PDF.js text-layer formatting errors
+ * before converting to float with cent precision.
+ */
+export function parseCurrency(str: string | number): number {
+  if (typeof str === 'number') {
+    return isNaN(str) ? 0 : Math.round(str * 100) / 100;
+  }
+  if (!str) return 0;
+  const normalized = normalizeCurrencyString(str);
+  const val = parseFloat(normalized);
+  return isNaN(val) ? 0 : Math.round(val * 100) / 100;
+}
+
+export { formatCurrency, cleanPayeeName };
 
 /**
  * Registry of bank parsers for modular bank support
@@ -113,6 +169,79 @@ export const UNRECOGNIZED_STATEMENT_ERROR =
   'Could not recognize this statement layout. Please ensure it is an original PDF from a supported bank.';
 
 /**
+ * Globally sanitizes and normalizes all transaction line items and summary balances
+ * before executing the strict $0.00 variance reconciliation math.
+ */
+export function normalizeStatementAmounts(result: StatementParseResult): StatementParseResult {
+  if (!result || result.bankId === 'UNKNOWN') return result;
+
+  // 1. Normalize summary balances
+  if (result.summary) {
+    result.summary.beginningBalance = parseCurrency(result.summary.beginningBalance);
+    result.summary.totalDeposits = parseCurrency(result.summary.totalDeposits);
+    result.summary.totalElectronicWithdrawals = parseCurrency(result.summary.totalElectronicWithdrawals);
+    result.summary.checksPaid = parseCurrency(result.summary.checksPaid);
+    result.summary.endingBalance = parseCurrency(result.summary.endingBalance);
+  }
+
+  // 2. Normalize transaction line items
+  if (result.transactions && result.transactions.length > 0) {
+    result.transactions.forEach((tx) => {
+      const normalizedRaw = parseCurrency(tx.rawAmount);
+      tx.rawAmount = normalizedRaw;
+      tx.amount = tx.type === 'CREDIT' ? normalizedRaw : -normalizedRaw;
+    });
+  }
+
+  // 3. Strict $0.00 variance reconciliation math
+  if (result.summary && result.transactions) {
+    const beginningBalance = result.summary.beginningBalance;
+    const endingBalance = result.summary.endingBalance;
+
+    const parsedCredits = result.transactions
+      .filter((t) => t.type === 'CREDIT')
+      .reduce((s, t) => s + t.rawAmount, 0);
+    const parsedDebits = result.transactions
+      .filter((t) => t.type === 'DEBIT')
+      .reduce((s, t) => s + t.rawAmount, 0);
+    const parsedChecks = result.transactions
+      .filter((t) => t.type === 'CHECK')
+      .reduce((s, t) => s + t.rawAmount, 0);
+
+    const calculatedEnding = Math.round((beginningBalance + parsedCredits - parsedDebits - parsedChecks) * 100) / 100;
+    const totalDiscrepancy = Math.round((calculatedEnding - endingBalance) * 100) / 100;
+    const isBalanced = Math.abs(totalDiscrepancy) < 0.01;
+
+    const flaggedRowIndices: number[] = [];
+    if (!isBalanced) {
+      result.transactions.forEach((tx, idx) => {
+        if (tx.rawAmount <= 0) {
+          tx.isFlagged = true;
+          flaggedRowIndices.push(idx);
+        }
+      });
+    }
+
+    result.reconciliation = {
+      status: isBalanced ? 'BALANCED' : 'MISMATCH',
+      diff: isBalanced ? 0.0 : totalDiscrepancy,
+      beginningBalance,
+      totalCredits: parsedCredits,
+      totalDebits: parsedDebits,
+      totalChecks: parsedChecks,
+      calculatedEnding,
+      statementEnding: endingBalance,
+      flaggedRowIndices,
+      details: isBalanced
+        ? 'All transactions reconcile with beginning and ending statement balances to the cent.'
+        : `Discrepancy of ${formatCurrency(totalDiscrepancy, true)} detected between statement summary and transaction ledger.`,
+    };
+  }
+
+  return result;
+}
+
+/**
  * Parse a single statement document with auto-detection
  */
 export function parseStatement(
@@ -166,7 +295,7 @@ export function parseStatement(
   if (!result.transactions || result.transactions.length === 0) {
     result.error = UNRECOGNIZED_STATEMENT_ERROR;
   }
-  return result;
+  return normalizeStatementAmounts(result);
 }
 
 /**
@@ -287,17 +416,17 @@ export function parseMultipleStatements(documents: ExtractedDocument[]): Stateme
   }));
 
   // Aggregate summary metrics across all statements
-  const beginningBalance = earliestStatement.summary.beginningBalance;
-  const endingBalance = latestStatement.summary.endingBalance;
+  const beginningBalance = parseCurrency(earliestStatement.summary.beginningBalance);
+  const endingBalance = parseCurrency(latestStatement.summary.endingBalance);
 
-  const totalDeposits = individualResults.reduce((sum, r) => sum + r.summary.totalDeposits, 0);
-  const totalElectronicWithdrawals = individualResults.reduce((sum, r) => sum + r.summary.totalElectronicWithdrawals, 0);
-  const checksPaid = individualResults.reduce((sum, r) => sum + r.summary.checksPaid, 0);
+  const totalDeposits = individualResults.reduce((sum, r) => sum + parseCurrency(r.summary.totalDeposits), 0);
+  const totalElectronicWithdrawals = individualResults.reduce((sum, r) => sum + parseCurrency(r.summary.totalElectronicWithdrawals), 0);
+  const checksPaid = individualResults.reduce((sum, r) => sum + parseCurrency(r.summary.checksPaid), 0);
 
   // Consolidated reconciliation
-  const parsedCredits = transactions.filter((t) => t.type === 'CREDIT').reduce((s, t) => s + t.rawAmount, 0);
-  const parsedDebits = transactions.filter((t) => t.type === 'DEBIT').reduce((s, t) => s + t.rawAmount, 0);
-  const parsedChecks = transactions.filter((t) => t.type === 'CHECK').reduce((s, t) => s + t.rawAmount, 0);
+  const parsedCredits = transactions.filter((t) => t.type === 'CREDIT').reduce((s, t) => s + parseCurrency(t.rawAmount), 0);
+  const parsedDebits = transactions.filter((t) => t.type === 'DEBIT').reduce((s, t) => s + parseCurrency(t.rawAmount), 0);
+  const parsedChecks = transactions.filter((t) => t.type === 'CHECK').reduce((s, t) => s + parseCurrency(t.rawAmount), 0);
 
   const calculatedEnding = Math.round((beginningBalance + parsedCredits - parsedDebits - parsedChecks) * 100) / 100;
   const totalDiscrepancy = Math.round((calculatedEnding - endingBalance) * 100) / 100;
@@ -378,27 +507,30 @@ export function recalculateReconciliation(
   statementEndingBalance: number,
   transactions: ParsedTransaction[]
 ): ReconciliationResult {
+  const normBeginning = parseCurrency(beginningBalance);
+  const normEnding = parseCurrency(statementEndingBalance);
+
   const totalCredits = transactions
     .filter((t) => t.type === 'CREDIT')
-    .reduce((sum, t) => sum + t.rawAmount, 0);
+    .reduce((sum, t) => sum + parseCurrency(t.rawAmount), 0);
 
   const totalDebits = transactions
     .filter((t) => t.type === 'DEBIT')
-    .reduce((sum, t) => sum + t.rawAmount, 0);
+    .reduce((sum, t) => sum + parseCurrency(t.rawAmount), 0);
 
   const totalChecks = transactions
     .filter((t) => t.type === 'CHECK')
-    .reduce((sum, t) => sum + t.rawAmount, 0);
+    .reduce((sum, t) => sum + parseCurrency(t.rawAmount), 0);
 
-  const calculatedEnding = Math.round((beginningBalance + totalCredits - totalDebits - totalChecks) * 100) / 100;
-  const rawDiff = Math.round((calculatedEnding - statementEndingBalance) * 100) / 100;
+  const calculatedEnding = Math.round((normBeginning + totalCredits - totalDebits - totalChecks) * 100) / 100;
+  const rawDiff = Math.round((calculatedEnding - normEnding) * 100) / 100;
 
   const isBalanced = Math.abs(rawDiff) < 0.01;
   const flaggedRowIndices: number[] = [];
 
   if (!isBalanced) {
     transactions.forEach((tx, idx) => {
-      if (tx.rawAmount <= 0) {
+      if (parseCurrency(tx.rawAmount) <= 0) {
         flaggedRowIndices.push(idx);
       }
     });
@@ -407,12 +539,12 @@ export function recalculateReconciliation(
   return {
     status: isBalanced ? 'BALANCED' : 'MISMATCH',
     diff: isBalanced ? 0.0 : rawDiff,
-    beginningBalance,
+    beginningBalance: normBeginning,
     totalCredits,
     totalDebits,
     totalChecks,
     calculatedEnding,
-    statementEnding: statementEndingBalance,
+    statementEnding: normEnding,
     flaggedRowIndices,
     details: isBalanced
       ? 'All transactions reconcile with beginning and ending statement balances to the cent.'

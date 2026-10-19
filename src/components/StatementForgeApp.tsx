@@ -45,6 +45,7 @@ import {
   parseStatement,
   recalculateReconciliation,
   formatCurrency,
+  parseCurrency,
   detectBank,
   ParsedTransaction,
   StatementParseResult,
@@ -427,7 +428,7 @@ export default function StatementForgeApp() {
         } else if (field === 'originalMemo') {
           return { ...tx, originalMemo: editValue.trim() || tx.originalMemo };
         } else if (field === 'amount') {
-          const num = parseFloat(editValue.replace(/[$,]/g, ''));
+          const num = parseCurrency(editValue);
           if (!isNaN(num)) {
             const raw = Math.abs(num);
             const signed = tx.type === 'CREDIT' ? raw : -raw;
